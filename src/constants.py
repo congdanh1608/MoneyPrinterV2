@@ -10,6 +10,7 @@ OPTIONS = [
     "Twitter Bot",
     "Affiliate Marketing",
     "Outreach",
+    "Generate Youtube Short (No Upload)",
     "Quit"
 ]
 

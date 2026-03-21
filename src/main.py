@@ -15,6 +15,7 @@ from classes.YouTube import YouTube
 from prettytable import PrettyTable
 from classes.Outreach import Outreach
 from classes.AFM import AffiliateMarketing
+from classes.VideoGenerator import VideoGenerator
 from llm_provider import list_models, select_model, get_active_model
 
 def main():
@@ -418,6 +419,21 @@ def main():
 
         outreach.start()
     elif user_input == 5:
+        info("Starting Generate Youtube Short (No Upload)...")
+
+        niche = get_default_niche()
+        language = get_default_language()
+
+        if not niche:
+            error("default_niche is not set in config.json. Please set it first.")
+            return
+
+        info(f" => Niche: {niche}, Language: {language}")
+
+        generator = VideoGenerator(niche, language)
+        tts = TTS()
+        generator.generate_video(tts)
+    elif user_input == 6:
         if get_verbose():
             print(colored(" => Quitting...", "blue"))
         sys.exit(0)

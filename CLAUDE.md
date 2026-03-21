@@ -18,7 +18,7 @@ There is no web UI, no REST API, no test suite, no CI, and no linting config.
 # First-time setup
 cp config.example.json config.json   # then fill in values
 python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt  # note: kittentts installs from a GitHub release URL, not PyPI
 
 # macOS quick setup (auto-configures Ollama, ImageMagick, Firefox profile)
 bash scripts/setup_local.sh
@@ -36,7 +36,7 @@ The app **must** be run from the project root. `python src/main.py` adds `src/` 
 
 ### Entry Points
 - `src/main.py` — interactive menu loop (primary)
-- `src/cron.py` — headless runner invoked by the scheduler as a subprocess: `python src/cron.py <platform> <account_uuid>`
+- `src/cron.py` — headless runner invoked by the scheduler as a subprocess: `python src/cron.py <platform> <account_uuid> <model_name>`
 
 ### Provider Pattern
 Two service categories use a string-based dispatch pattern configured in `config.json`:
@@ -58,7 +58,9 @@ LLM always uses the local Ollama server. Image generation always uses Nano Banan
 - **`src/classes/Twitter.py`** — Selenium automation against x.com
 - **`src/classes/AFM.py`** — Amazon scraping + LLM pitch generation
 - **`src/classes/Outreach.py`** — Google Maps scraper (requires Go) + email sending via yagmail
-- **`src/classes/Tts.py`** — KittenTTS wrapper
+- **`src/classes/Tts.py`** — KittenTTS wrapper (voices: Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, Leo)
+- **`src/utils.py`** — Selenium cleanup (`close_selenium()`), temp file removal (`rem_temp_files()`), song fetching (`fetch_songs()`)
+- **`src/status.py`** — colored terminal output helpers (`error()`, `success()`, `info()`, `warning()`, `question()`)
 
 ### Data Storage
 All persistent state lives in `.mp/` at the project root as JSON files (`youtube.json`, `twitter.json`, `afm.json`). This directory also serves as scratch space for temporary WAV, PNG, SRT, and MP4 files — non-JSON files are cleaned on each run by `rem_temp_files()`.
@@ -67,7 +69,7 @@ All persistent state lives in `.mp/` at the project root as JSON files (`youtube
 Selenium uses pre-authenticated Firefox profiles (never handles login). The profile path is stored per-account in the cache JSON and also in `config.json` as a default.
 
 ### CRON Scheduling
-Uses Python's `schedule` library (in-process, not OS cron). The scheduled job spawns `subprocess.run(["python", "src/cron.py", platform, account_id])`.
+Uses Python's `schedule` library (in-process, not OS cron). The scheduled job spawns `subprocess.run(["python", "src/cron.py", platform, account_id, model])`. Available frequencies: once daily, twice daily (10:00 AM, 4:00 PM), or thrice daily (8:00 AM, 12:00 PM, 6:00 PM).
 
 ## Configuration
 
@@ -81,3 +83,9 @@ All config lives in `config.json` at the project root. See `config.example.json`
 ## Contributing
 
 PRs go against `main`. One feature/fix per PR. Open an issue first. Use `WIP` label for in-progress PRs.
+
+## Scripts
+
+- `scripts/setup_local.sh` — macOS/Linux quick setup (venv, requirements, auto-detects ImageMagick, Firefox profile, Ollama models)
+- `scripts/preflight_local.py` — validates external services are reachable before running
+- `scripts/upload_video.sh` — manual video upload utility

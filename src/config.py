@@ -325,6 +325,26 @@ def get_imagemagick_path() -> str:
     with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
         return json.load(file)["imagemagick_path"]
 
+def get_default_niche() -> str:
+    """
+    Gets the default niche for video generation from the config file.
+
+    Returns:
+        niche (str): The default niche
+    """
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("default_niche", "")
+
+def get_default_language() -> str:
+    """
+    Gets the default language for video generation from the config file.
+
+    Returns:
+        language (str): The default language
+    """
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("default_language", "English")
+
 def get_script_sentence_length() -> int:
     """
     Gets the forced script's sentence length.
