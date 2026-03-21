@@ -35,5 +35,10 @@
   "default_niche": "",
   "default_language": "English",
   "image_provider": "replicate",
-  "replicate_api_token": ""
+  "replicate_api_token": "",
+  "freepik_api_key": "",
+  "freepik_model": "realism",
+  "script_min_words": 100,
+  "script_max_words": 150,
+  "title_max_length": 70
 }

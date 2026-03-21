@@ -333,6 +333,26 @@ def get_replicate_api_token() -> str:
     with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
         return json.load(file).get("replicate_api_token", "")
 
+def get_freepik_api_key() -> str:
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("freepik_api_key", "")
+
+def get_freepik_model() -> str:
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("freepik_model", "realism")
+
+def get_script_min_words() -> int:
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("script_min_words", 100)
+
+def get_script_max_words() -> int:
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("script_max_words", 150)
+
+def get_title_max_length() -> int:
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("title_max_length", 70)
+
 def get_default_niche() -> str:
     """
     Gets the default niche for video generation from the config file.

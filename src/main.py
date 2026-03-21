@@ -11,7 +11,8 @@ from constants import *
 from classes.Tts import TTS
 from termcolor import colored
 from prettytable import PrettyTable
-from classes.VideoGenerator import VideoGenerator
+from classes.video_generator import VideoGenerator
+from classes.video_generator.state import find_resumable
 from llm_provider import list_models, select_model, get_active_model
 
 def main():
@@ -422,11 +423,40 @@ def main():
     elif user_input == 5:
         info("Starting Generate Youtube Short (No Upload)...")
 
+        # Always show image provider selection
+        current_provider = get_image_provider()
+        info("\n============ IMAGE PROVIDER ============", False)
+        print(colored(f" 1. Replicate (flux-dev) - free tier", "cyan"))
+        print(colored(f" 2. Gemini (nanobanana2) - requires billing", "cyan"))
+        print(colored(f" 3. Freepik (Mystic) - API key required", "cyan"))
+        info("=======================================\n", False)
+        default_label = f" (current: {current_provider})" if current_provider else ""
+        provider_choice = question(f"Select image provider{default_label}, Enter to keep: ").strip()
+        if provider_choice == "1":
+            current_provider = "replicate"
+        elif provider_choice == "2":
+            current_provider = "gemini"
+        elif provider_choice == "3":
+            current_provider = "freepik"
+        elif not current_provider:
+            current_provider = "replicate"
+
+        # Save choice to config
+        import json as _json
+        cfg_path = os.path.join(ROOT_DIR, "config.json")
+        with open(cfg_path, "r") as f:
+            cfg = _json.load(f)
+        cfg["image_provider"] = current_provider
+        with open(cfg_path, "w") as f:
+            _json.dump(cfg, f, indent=2)
+            f.write("\n")
+        info(f" => Image provider: {current_provider}")
+
         niche = get_default_niche()
         language = get_default_language()
 
         # Check for resumable previous runs
-        resumable = VideoGenerator.find_resumable()
+        resumable = find_resumable()
         if resumable:
             info(f"\nFound {len(resumable)} incomplete video(s):")
             for idx, r in enumerate(resumable):
@@ -453,7 +483,7 @@ def main():
                 for r in to_resume:
                     info(f"\n{'='*40} Resuming: {r['topic'][:40]} {'='*40}")
                     generator = VideoGenerator(r["niche"], r["language"], video_id=r["video_id"])
-                    generator._restore_from_state()
+                    generator.restore_from_state()
                     result = generator.generate_video(tts)
                     if result:
                         generated += 1
