@@ -8,7 +8,7 @@ from config import *
 from status import *
 from uuid import uuid4
 from constants import *
-from classes.Tts import TTS
+from classes.Tts import TTS, VoiceBoxTTS
 from termcolor import colored
 from prettytable import PrettyTable
 from classes.video_generator import VideoGenerator
@@ -452,6 +452,29 @@ def main():
             f.write("\n")
         info(f" => Image provider: {current_provider}")
 
+        # Choose TTS provider
+        current_tts = get_tts_provider()
+        if not current_tts:
+            info("\n============ TTS PROVIDER ==============", False)
+            print(colored(" 1. KittenTTS (local, built-in)", "cyan"))
+            print(colored(" 2. VoiceBox (local server, custom voice)", "cyan"))
+            info("=======================================\n", False)
+            tts_choice = question("Select TTS provider: ").strip()
+            if tts_choice == "2":
+                current_tts = "voicebox"
+            else:
+                current_tts = "kittentts"
+
+            cfg_path2 = os.path.join(ROOT_DIR, "config.json")
+            with open(cfg_path2, "r") as f:
+                cfg2 = _json.load(f)
+            cfg2["tts_provider"] = current_tts
+            with open(cfg_path2, "w") as f:
+                _json.dump(cfg2, f, indent=2)
+                f.write("\n")
+
+        info(f" => TTS provider: {current_tts}")
+
         niche = get_default_niche()
         language = get_default_language()
 
@@ -467,7 +490,7 @@ def main():
             resume_choice = question("\nResume? Enter number, 'all', or 'no' for new: ").strip().lower()
 
             if resume_choice != "no":
-                tts = TTS()
+                tts = VoiceBoxTTS() if current_tts == "voicebox" else TTS()
                 to_resume = []
                 if resume_choice == "all":
                     to_resume = resumable
@@ -507,7 +530,7 @@ def main():
 
         info(f" => Niche: {niche}, Language: {language}, Count: {count}")
 
-        tts = TTS()
+        tts = VoiceBoxTTS() if current_tts == "voicebox" else TTS()
         generated = 0
         for i in range(count):
             if count > 1:

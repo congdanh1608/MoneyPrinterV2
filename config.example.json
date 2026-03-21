@@ -40,5 +40,9 @@
   "freepik_model": "realism",
   "script_min_words": 100,
   "script_max_words": 150,
-  "title_max_length": 70
+  "title_max_length": 70,
+  "tts_provider": "",
+  "voicebox_url": "http://127.0.0.1:17493",
+  "voicebox_profile_id": "",
+  "voicebox_language": "en"
 }

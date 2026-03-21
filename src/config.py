@@ -353,6 +353,22 @@ def get_title_max_length() -> int:
     with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
         return json.load(file).get("title_max_length", 70)
 
+def get_tts_provider() -> str:
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("tts_provider", "")
+
+def get_voicebox_url() -> str:
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("voicebox_url", "http://127.0.0.1:17493")
+
+def get_voicebox_profile_id() -> str:
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("voicebox_profile_id", "")
+
+def get_voicebox_language() -> str:
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("voicebox_language", "en")
+
 def get_default_niche() -> str:
     """
     Gets the default niche for video generation from the config file.
