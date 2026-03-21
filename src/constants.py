@@ -11,6 +11,7 @@ OPTIONS = [
     "Affiliate Marketing",
     "Outreach",
     "Generate Youtube Short (No Upload)",
+    "Short Youtube (Provide Script)",
     "Quit"
 ]
 
