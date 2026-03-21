@@ -33,5 +33,7 @@
   "imagemagick_path": "Path to magick.exe or on linux/macOS just /usr/bin/convert",
   "script_sentence_length": 4,
   "default_niche": "",
-  "default_language": "English"
+  "default_language": "English",
+  "image_provider": "replicate",
+  "replicate_api_token": ""
 }

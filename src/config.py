@@ -325,6 +325,14 @@ def get_imagemagick_path() -> str:
     with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
         return json.load(file)["imagemagick_path"]
 
+def get_image_provider() -> str:
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("image_provider", "gemini")
+
+def get_replicate_api_token() -> str:
+    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
+        return json.load(file).get("replicate_api_token", "")
+
 def get_default_niche() -> str:
     """
     Gets the default niche for video generation from the config file.

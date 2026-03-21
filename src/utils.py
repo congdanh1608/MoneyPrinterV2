@@ -134,20 +134,29 @@ def fetch_songs() -> None:
         error(f"Error occurred while fetching songs: {str(e)}")
 
 
-def choose_random_song() -> str:
-    """
-    Chooses a random song from the songs/ directory.
+AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg")
 
-    Returns:
-        str: The path to the chosen song.
-    """
+
+def get_available_moods() -> list:
+    """Returns list of mood subfolder names in Songs/."""
+    songs_dir = os.path.join(ROOT_DIR, "Songs")
+    if not os.path.exists(songs_dir):
+        return []
+    return [
+        name for name in sorted(os.listdir(songs_dir))
+        if os.path.isdir(os.path.join(songs_dir, name))
+    ]
+
+
+def choose_random_song() -> str:
+    """Chooses a random song from Songs/ (flat, ignoring subfolders)."""
     try:
         songs_dir = os.path.join(ROOT_DIR, "Songs")
         songs = [
             name
             for name in os.listdir(songs_dir)
             if os.path.isfile(os.path.join(songs_dir, name))
-            and name.lower().endswith((".mp3", ".wav", ".m4a", ".aac", ".ogg"))
+            and name.lower().endswith(AUDIO_EXTENSIONS)
         ]
         if len(songs) == 0:
             raise RuntimeError("No audio files found in Songs directory")
@@ -157,3 +166,24 @@ def choose_random_song() -> str:
     except Exception as e:
         error(f"Error occurred while choosing random song: {str(e)}")
         raise
+
+
+def choose_song_by_mood(mood: str) -> str:
+    """Pick a random song from Songs/<mood>/ subfolder. Falls back to random if not found."""
+    songs_dir = os.path.join(ROOT_DIR, "Songs")
+    mood_dir = os.path.join(songs_dir, mood.lower().strip())
+
+    if os.path.isdir(mood_dir):
+        songs = [
+            name for name in os.listdir(mood_dir)
+            if os.path.isfile(os.path.join(mood_dir, name))
+            and name.lower().endswith(AUDIO_EXTENSIONS)
+        ]
+        if songs:
+            song = random.choice(songs)
+            success(f" => Chose song for mood '{mood}': {song}")
+            return os.path.join(mood_dir, song)
+
+    if get_verbose():
+        warning(f"No songs found for mood '{mood}'. Falling back to random.")
+    return choose_random_song()

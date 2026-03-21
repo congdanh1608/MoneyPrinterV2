@@ -8,3 +8,8 @@ niche.txt
 *.exe
 auto.sh
 .DS_Store
+
+#source
+/source
+/output
+/Songs

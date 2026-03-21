@@ -425,6 +425,45 @@ def main():
         niche = get_default_niche()
         language = get_default_language()
 
+        # Check for resumable previous runs
+        resumable = VideoGenerator.find_resumable()
+        if resumable:
+            info(f"\nFound {len(resumable)} incomplete video(s):")
+            for idx, r in enumerate(resumable):
+                steps_done = ", ".join(r["completed_steps"]) or "none"
+                err_info = f" | Last error: {r['last_error_step']}" if r["last_error_step"] else ""
+                print(colored(f"  {idx + 1}. {r['topic'][:50]} (done: {steps_done}{err_info})", "yellow"))
+
+            resume_choice = question("\nResume? Enter number, 'all', or 'no' for new: ").strip().lower()
+
+            if resume_choice != "no":
+                tts = TTS()
+                to_resume = []
+                if resume_choice == "all":
+                    to_resume = resumable
+                else:
+                    try:
+                        idx = int(resume_choice) - 1
+                        if 0 <= idx < len(resumable):
+                            to_resume = [resumable[idx]]
+                    except ValueError:
+                        pass
+
+                generated = 0
+                for r in to_resume:
+                    info(f"\n{'='*40} Resuming: {r['topic'][:40]} {'='*40}")
+                    generator = VideoGenerator(r["niche"], r["language"], video_id=r["video_id"])
+                    generator._restore_from_state()
+                    result = generator.generate_video(tts)
+                    if result:
+                        generated += 1
+
+                if generated > 0:
+                    success(f"Done! Resumed {generated} video(s).")
+                else:
+                    error("No videos were completed.")
+                return
+
         if not niche:
             error("default_niche is not set in config.json. Please set it first.")
             return
@@ -473,7 +512,7 @@ if __name__ == "__main__":
     # Setup file tree
     assert_folder_structure()
 
-    # Remove temporary files
+    # Remove temporary files from .mp/ (source/ and output/ are persistent)
     rem_temp_files()
 
     # Fetch MP3 Files

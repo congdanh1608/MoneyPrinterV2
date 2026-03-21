@@ -2,9 +2,9 @@ import re
 import base64
 import json
 import os
-import shutil
 import requests
 import assemblyai as aai
+import time as _time
 
 from utils import *
 from cache import *
@@ -24,22 +24,49 @@ from termcolor import colored
 # Set ImageMagick Path
 change_settings({"IMAGEMAGICK_BINARY": get_imagemagick_path()})
 
+# State file to track progress per video
+STATE_FILE = os.path.join(ROOT_DIR, "source", ".state.json")
+
+
+def _load_state() -> dict:
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_state(state: dict) -> None:
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
 
 class VideoGenerator:
     """
-    Generates YouTube Shorts-style videos without browser automation.
-    Videos are saved to the output/ folder at the project root.
+    Generates YouTube Shorts-style videos.
+
+    Folder structure:
+        source/<video_id>/       - images, audio, srt (persistent, never auto-deleted)
+        output/<video_id>/       - final mp4 + log txt
+        source/.state.json       - tracks progress for resume
     """
 
-    def __init__(self, niche: str, language: str) -> None:
+    STEPS = ["topic", "script", "metadata", "prompts", "images", "tts", "combine"]
+
+    def __init__(self, niche: str, language: str, video_id: str = None) -> None:
         self._niche = niche
         self._language = language
         self.images = []
+        self.image_prompts = []
 
-        # Ensure output directory exists
-        self._output_dir = os.path.join(ROOT_DIR, "output")
-        if not os.path.exists(self._output_dir):
-            os.makedirs(self._output_dir)
+        # Generate or use provided video_id
+        self._video_id = video_id or datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + str(uuid4())[:8]
+
+        # Setup directories
+        self._source_dir = os.path.join(ROOT_DIR, "source", self._video_id)
+        self._output_dir = os.path.join(ROOT_DIR, "output", self._video_id)
+        os.makedirs(self._source_dir, exist_ok=True)
+        os.makedirs(self._output_dir, exist_ok=True)
 
     @property
     def niche(self) -> str:
@@ -49,10 +76,72 @@ class VideoGenerator:
     def language(self) -> str:
         return self._language
 
+    # ── State management ──
+
+    def _get_state(self) -> dict:
+        all_state = _load_state()
+        return all_state.get(self._video_id, {})
+
+    def _update_state(self, **kwargs) -> None:
+        all_state = _load_state()
+        if self._video_id not in all_state:
+            all_state[self._video_id] = {"niche": self._niche, "language": self._language}
+        all_state[self._video_id].update(kwargs)
+        _save_state(all_state)
+
+    def _mark_step(self, step: str) -> None:
+        state = self._get_state()
+        completed = state.get("completed_steps", [])
+        if step not in completed:
+            completed.append(step)
+        self._update_state(completed_steps=completed)
+
+    def _is_step_done(self, step: str) -> bool:
+        state = self._get_state()
+        return step in state.get("completed_steps", [])
+
+    def _mark_error(self, step: str, error_msg: str) -> None:
+        self._update_state(last_error_step=step, last_error=error_msg, status="error")
+
+    def _mark_complete(self) -> None:
+        self._update_state(status="complete", last_error_step=None, last_error=None)
+
+    def _restore_from_state(self) -> None:
+        """Restore in-memory state from saved state + source files."""
+        state = self._get_state()
+        self.subject = state.get("topic_text", "")
+        self.script = state.get("script_text", "")
+        self.metadata = state.get("metadata", {"title": "", "description": ""})
+        self.image_prompts = state.get("image_prompts", [])
+
+        # Reload images from source dir
+        supported = (".png", ".jpg", ".jpeg", ".webp")
+        self.images = sorted([
+            os.path.join(self._source_dir, f)
+            for f in os.listdir(self._source_dir)
+            if f.lower().endswith(supported)
+        ])
+
+        # Reload audio
+        wavs = sorted([
+            os.path.join(self._source_dir, f)
+            for f in os.listdir(self._source_dir)
+            if f.endswith(".wav")
+        ])
+        if wavs:
+            self.tts_path = wavs[0]
+
+    # ── Content generation ──
+
     def generate_response(self, prompt: str) -> str:
         return generate_text(prompt)
 
     def generate_topic(self) -> str:
+        if self._is_step_done("topic"):
+            self.subject = self._get_state().get("topic_text", "")
+            info(f" => Topic (resumed): {self.subject}")
+            return self.subject
+
         completion = self.generate_response(
             f"Please generate a specific video idea that takes about the following topic: {self.niche}. Make it exactly one sentence. Only return the topic, nothing else."
         )
@@ -61,9 +150,16 @@ class VideoGenerator:
             error("Failed to generate Topic.")
 
         self.subject = completion
+        self._update_state(topic_text=completion)
+        self._mark_step("topic")
         return completion
 
     def generate_script(self) -> str:
+        if self._is_step_done("script"):
+            self.script = self._get_state().get("script_text", "")
+            info(f" => Script (resumed): {self.script[:60]}...")
+            return self.script
+
         prompt = f"""
 You are a viral short-form storyteller.
 
@@ -97,16 +193,48 @@ Language: {self.language}
             error("The generated script is empty.")
             return
 
-        # Enforce ~80 word limit - retry if too long
         if len(completion.split()) > 100:
             if get_verbose():
                 warning(f"Generated script too long ({len(completion.split())} words). Retrying...")
             return self.generate_script()
 
         self.script = completion
+        self._update_state(script_text=completion)
+        self._mark_step("script")
         return completion
 
+    def _detect_mood(self) -> str:
+        """Use LLM to detect mood from script, matching available Songs/ subfolders."""
+        moods = get_available_moods()
+        if not moods:
+            self._mood = None
+            return None
+
+        mood_list = ", ".join(moods)
+        response = self.generate_response(
+            f"Given this script, pick the single most fitting mood from: [{mood_list}]. "
+            f"Return ONLY the mood word, nothing else.\n\nScript: {self.script}"
+        ).strip().lower()
+
+        # Match to actual folder name
+        self._mood = response if response in [m.lower() for m in moods] else None
+
+        if self._mood:
+            info(f" => Detected mood: {self._mood}")
+        else:
+            if get_verbose():
+                warning(f"LLM returned '{response}' which doesn't match any mood folder. Using random.")
+            self._mood = None
+
+        self._update_state(mood=self._mood)
+        return self._mood
+
     def generate_metadata(self) -> dict:
+        if self._is_step_done("metadata"):
+            self.metadata = self._get_state().get("metadata", {})
+            info(f" => Metadata (resumed): {self.metadata.get('title', '')[:60]}")
+            return self.metadata
+
         title = self.generate_response(
             f"Please generate a YouTube Video Title for the following subject, including hashtags: {self.subject}. Only return the title, nothing else. Limit the title under 100 characters."
         )
@@ -121,10 +249,16 @@ Language: {self.language}
         )
 
         self.metadata = {"title": title, "description": description}
+        self._update_state(metadata=self.metadata)
+        self._mark_step("metadata")
         return self.metadata
 
     def generate_prompts(self) -> List[str]:
-        # For short videos (~80 words), 3-5 images is optimal
+        if self._is_step_done("prompts"):
+            self.image_prompts = self._get_state().get("image_prompts", [])
+            info(f" => Image prompts (resumed): {len(self.image_prompts)} prompts")
+            return self.image_prompts
+
         n_prompts = max(3, min(5, len(self.script.split('.')) - 1))
 
         prompt = f"""
@@ -163,9 +297,7 @@ Story for context:
                     info(f" => Generated Image Prompts: {image_prompts}")
             except Exception:
                 if get_verbose():
-                    warning(
-                        "LLM returned an unformatted response. Attempting to clean..."
-                    )
+                    warning("LLM returned an unformatted response. Attempting to clean...")
 
                 r = re.compile(r"\[.*\]")
                 image_prompts = r.findall(completion)
@@ -178,11 +310,16 @@ Story for context:
             image_prompts = image_prompts[: int(n_prompts)]
 
         self.image_prompts = image_prompts
+        self._update_state(image_prompts=image_prompts)
+        self._mark_step("prompts")
         success(f"Generated {len(image_prompts)} Image Prompts.")
         return image_prompts
 
+    # ── Image generation ──
+
     def _persist_image(self, image_bytes: bytes, provider_label: str) -> str:
-        image_path = os.path.join(ROOT_DIR, ".mp", str(uuid4()) + ".png")
+        idx = len(self.images) + 1
+        image_path = os.path.join(self._source_dir, f"{idx:02d}.png")
 
         with open(image_path, "wb") as image_file:
             image_file.write(image_bytes)
@@ -193,8 +330,109 @@ Story for context:
         self.images.append(image_path)
         return image_path
 
-    def generate_image(self, prompt: str, max_retries: int = 3) -> str:
-        print(f"Generating Image using Nano Banana 2 API: {prompt[:80]}...")
+    def generate_images(self) -> None:
+        """Generate all images, skipping already generated ones."""
+        if self._is_step_done("images"):
+            # Reload from source dir
+            supported = (".png", ".jpg", ".jpeg", ".webp")
+            self.images = sorted([
+                os.path.join(self._source_dir, f)
+                for f in os.listdir(self._source_dir)
+                if f.lower().endswith(supported)
+            ])
+            info(f" => Images (resumed): {len(self.images)} images")
+            return
+
+        # Check how many images already exist (partial resume)
+        supported = (".png", ".jpg", ".jpeg", ".webp")
+        existing = sorted([
+            os.path.join(self._source_dir, f)
+            for f in os.listdir(self._source_dir)
+            if f.lower().endswith(supported)
+        ])
+        self.images = existing
+        start_from = len(existing)
+
+        if start_from > 0:
+            info(f" => Found {start_from} existing images, resuming from image {start_from + 1}")
+
+        provider = get_image_provider()
+        for i, prompt in enumerate(self.image_prompts):
+            if i < start_from:
+                continue
+            if provider == "replicate":
+                self._generate_image_replicate(prompt)
+            else:
+                self._generate_image_gemini(prompt)
+            if i < len(self.image_prompts) - 1:
+                _time.sleep(10)
+
+        if len(self.images) == len(self.image_prompts):
+            self._mark_step("images")
+
+    def _generate_image_replicate(self, prompt: str, max_retries: int = 3) -> str:
+        token = get_replicate_api_token()
+        if not token:
+            error("replicate_api_token is not configured in config.json.")
+            return None
+
+        print(f"Generating Image using Replicate flux-dev: {prompt[:80]}...")
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "input": {
+                "prompt": prompt,
+                "aspect_ratio": "9:16",
+                "num_outputs": 1,
+                "output_format": "png",
+            }
+        }
+
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    "https://api.replicate.com/v1/models/black-forest-labs/flux-dev/predictions",
+                    headers=headers, json=payload, timeout=30,
+                )
+                if response.status_code == 429:
+                    wait = 15 * (attempt + 1)
+                    warning(f"Rate limited. Waiting {wait}s before retry ({attempt+1}/{max_retries})...")
+                    _time.sleep(wait)
+                    continue
+
+                response.raise_for_status()
+                prediction_id = response.json()["id"]
+
+                poll_url = f"https://api.replicate.com/v1/predictions/{prediction_id}"
+                for _ in range(60):
+                    _time.sleep(2)
+                    result = requests.get(poll_url, headers=headers, timeout=10).json()
+                    status = result["status"]
+                    if status == "succeeded":
+                        output = result.get("output", [])
+                        if output:
+                            image_url = output[0] if isinstance(output, list) else output
+                            img_resp = requests.get(image_url, timeout=60)
+                            img_resp.raise_for_status()
+                            return self._persist_image(img_resp.content, "Replicate flux-dev")
+                        return None
+                    elif status == "failed":
+                        warning(f"Replicate failed: {result.get('error')}")
+                        return None
+                return None
+            except Exception as e:
+                if get_verbose():
+                    warning(f"Replicate error: {str(e)}")
+                if attempt < max_retries - 1:
+                    _time.sleep(5)
+                    continue
+                return None
+
+    def _generate_image_gemini(self, prompt: str, max_retries: int = 3) -> str:
+        print(f"Generating Image using Gemini API: {prompt[:80]}...")
 
         api_key = get_nanobanana2_api_key()
         if not api_key:
@@ -214,17 +452,13 @@ Story for context:
             },
         }
 
-        import time as _time
-
         for attempt in range(max_retries):
             try:
                 response = requests.post(
                     endpoint,
                     headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                    json=payload,
-                    timeout=300,
+                    json=payload, timeout=300,
                 )
-
                 if response.status_code == 429:
                     wait = 15 * (attempt + 1)
                     warning(f"Rate limited. Waiting {wait}s before retry ({attempt+1}/{max_retries})...")
@@ -233,40 +467,45 @@ Story for context:
 
                 response.raise_for_status()
                 body = response.json()
-
-                candidates = body.get("candidates", [])
-                for candidate in candidates:
-                    content = candidate.get("content", {})
-                    for part in content.get("parts", []):
+                for candidate in body.get("candidates", []):
+                    for part in candidate.get("content", {}).get("parts", []):
                         inline_data = part.get("inlineData") or part.get("inline_data")
                         if not inline_data:
                             continue
                         data = inline_data.get("data")
                         mime_type = inline_data.get("mimeType") or inline_data.get("mime_type", "")
                         if data and str(mime_type).startswith("image/"):
-                            image_bytes = base64.b64decode(data)
-                            return self._persist_image(image_bytes, "Nano Banana 2 API")
+                            return self._persist_image(base64.b64decode(data), "Gemini API")
 
                 if get_verbose():
-                    warning(f"Nano Banana 2 did not return an image payload. Response: {body}")
+                    warning(f"Gemini did not return image. Response: {body}")
                 return None
             except Exception as e:
                 if get_verbose():
-                    warning(f"Failed to generate image with Nano Banana 2 API: {str(e)}")
+                    warning(f"Gemini error: {str(e)}")
                 if attempt < max_retries - 1:
                     _time.sleep(5)
                     continue
                 return None
 
+    # ── Audio & Subtitles ──
+
     def generate_script_to_speech(self, tts_instance: TTS) -> str:
-        path = os.path.join(ROOT_DIR, ".mp", str(uuid4()) + ".wav")
+        if self._is_step_done("tts"):
+            wavs = [f for f in os.listdir(self._source_dir) if f.endswith(".wav")]
+            if wavs:
+                self.tts_path = os.path.join(self._source_dir, sorted(wavs)[0])
+                info(f" => TTS (resumed): {self.tts_path}")
+                return self.tts_path
+
+        path = os.path.join(self._source_dir, "audio.wav")
         self.script = re.sub(r"[^\w\s.?!]", "", self.script)
         tts_instance.synthesize(self.script, path)
         self.tts_path = path
+        self._mark_step("tts")
 
         if get_verbose():
             info(f' => Wrote TTS to "{path}"')
-
         return path
 
     def _format_srt_timestamp(self, seconds: float) -> str:
@@ -279,83 +518,62 @@ Story for context:
 
     def generate_subtitles(self, audio_path: str) -> str:
         provider = str(get_stt_provider() or "local_whisper").lower()
-
         if provider == "local_whisper":
-            return self.generate_subtitles_local_whisper(audio_path)
-
+            return self._generate_subtitles_local_whisper(audio_path)
         if provider == "third_party_assemblyai":
-            return self.generate_subtitles_assemblyai(audio_path)
-
+            return self._generate_subtitles_assemblyai(audio_path)
         warning(f"Unknown stt_provider '{provider}'. Falling back to local_whisper.")
-        return self.generate_subtitles_local_whisper(audio_path)
+        return self._generate_subtitles_local_whisper(audio_path)
 
-    def generate_subtitles_assemblyai(self, audio_path: str) -> str:
+    def _generate_subtitles_assemblyai(self, audio_path: str) -> str:
         aai.settings.api_key = get_assemblyai_api_key()
-        config = aai.TranscriptionConfig()
-        transcriber = aai.Transcriber(config=config)
-        transcript = transcriber.transcribe(audio_path)
-        subtitles = transcript.export_subtitles_srt()
-
-        srt_path = os.path.join(ROOT_DIR, ".mp", str(uuid4()) + ".srt")
+        transcript = aai.Transcriber(config=aai.TranscriptionConfig()).transcribe(audio_path)
+        srt_path = os.path.join(self._source_dir, "subtitles.srt")
         with open(srt_path, "w") as file:
-            file.write(subtitles)
-
+            file.write(transcript.export_subtitles_srt())
         return srt_path
 
-    def generate_subtitles_local_whisper(self, audio_path: str) -> str:
+    def _generate_subtitles_local_whisper(self, audio_path: str) -> str:
         try:
             from faster_whisper import WhisperModel
         except ImportError:
-            error(
-                "Local STT selected but 'faster-whisper' is not installed. "
-                "Install it or switch stt_provider to third_party_assemblyai."
-            )
+            error("Local STT selected but 'faster-whisper' is not installed.")
             raise
 
-        model = WhisperModel(
-            get_whisper_model(),
-            device=get_whisper_device(),
-            compute_type=get_whisper_compute_type(),
-        )
+        model = WhisperModel(get_whisper_model(), device=get_whisper_device(), compute_type=get_whisper_compute_type())
         segments, _ = model.transcribe(audio_path, vad_filter=True)
 
         lines = []
         for idx, segment in enumerate(segments, start=1):
-            start = self._format_srt_timestamp(segment.start)
-            end = self._format_srt_timestamp(segment.end)
             text = str(segment.text).strip()
-
             if not text:
                 continue
-
             lines.append(str(idx))
-            lines.append(f"{start} --> {end}")
+            lines.append(f"{self._format_srt_timestamp(segment.start)} --> {self._format_srt_timestamp(segment.end)}")
             lines.append(text)
             lines.append("")
 
-        subtitles = "\n".join(lines)
-        srt_path = os.path.join(ROOT_DIR, ".mp", str(uuid4()) + ".srt")
+        srt_path = os.path.join(self._source_dir, "subtitles.srt")
         with open(srt_path, "w", encoding="utf-8") as file:
-            file.write(subtitles)
-
+            file.write("\n".join(lines))
         return srt_path
 
+    # ── Video composition ──
+
     def combine(self) -> str:
-        combined_image_path = os.path.join(ROOT_DIR, ".mp", str(uuid4()) + ".mp4")
+        video_path = os.path.join(self._output_dir, "video.mp4")
         threads = get_threads()
         tts_clip = AudioFileClip(self.tts_path)
         max_duration = tts_clip.duration
         req_dur = max_duration / len(self.images)
+        self._duration = max_duration
 
         generator = lambda txt: TextClip(
             txt,
             font=os.path.join(get_fonts_dir(), get_font()),
-            fontsize=100,
-            color="#FFFF00",
-            stroke_color="black",
-            stroke_width=5,
-            size=(1080, 1920),
-            method="caption",
+            fontsize=100, color="#FFFF00",
+            stroke_color="black", stroke_width=5,
+            size=(1080, 1920), method="caption",
         )
 
         print(colored("[+] Combining images...", "blue"))
@@ -369,35 +587,24 @@ Story for context:
                 clip = clip.set_fps(30)
 
                 if round((clip.w / clip.h), 4) < 0.5625:
-                    if get_verbose():
-                        info(f" => Resizing Image: {image_path} to 1080x1920")
-                    clip = crop(
-                        clip,
-                        width=clip.w,
-                        height=round(clip.w / 0.5625),
-                        x_center=clip.w / 2,
-                        y_center=clip.h / 2,
-                    )
+                    clip = crop(clip, width=clip.w, height=round(clip.w / 0.5625),
+                                x_center=clip.w / 2, y_center=clip.h / 2)
                 else:
-                    if get_verbose():
-                        info(f" => Resizing Image: {image_path} to 1920x1080")
-                    clip = crop(
-                        clip,
-                        width=round(0.5625 * clip.h),
-                        height=clip.h,
-                        x_center=clip.w / 2,
-                        y_center=clip.h / 2,
-                    )
+                    clip = crop(clip, width=round(0.5625 * clip.h), height=clip.h,
+                                x_center=clip.w / 2, y_center=clip.h / 2)
                 clip = clip.resize((1080, 1920))
-
                 clips.append(clip)
                 tot_dur += clip.duration
 
-        final_clip = concatenate_videoclips(clips)
-        final_clip = final_clip.set_fps(30)
-        random_song = choose_random_song()
-        self._bg_song = random_song
-        self._duration = max_duration
+        final_clip = concatenate_videoclips(clips).set_fps(30)
+
+        # Pick song by mood if subfolders exist
+        moods = get_available_moods()
+        if moods and hasattr(self, '_mood') and self._mood:
+            song = choose_song_by_mood(self._mood)
+        else:
+            song = choose_random_song()
+        self._bg_song = song
 
         subtitles = None
         try:
@@ -406,36 +613,34 @@ Story for context:
             subtitles = SubtitlesClip(subtitles_path, generator)
             subtitles.set_pos(("center", "center"))
         except Exception as e:
-            warning(f"Failed to generate subtitles, continuing without subtitles: {e}")
+            warning(f"Failed to generate subtitles, continuing without: {e}")
 
-        random_song_clip = AudioFileClip(random_song).set_fps(44100)
+        random_song_clip = AudioFileClip(song).set_fps(44100)
         random_song_clip = random_song_clip.fx(afx.volumex, 0.1)
         comp_audio = CompositeAudioClip([tts_clip.set_fps(44100), random_song_clip])
 
-        final_clip = final_clip.set_audio(comp_audio)
-        final_clip = final_clip.set_duration(tts_clip.duration)
+        final_clip = final_clip.set_audio(comp_audio).set_duration(tts_clip.duration)
 
         if subtitles is not None:
             final_clip = CompositeVideoClip([final_clip, subtitles])
 
-        final_clip.write_videofile(combined_image_path, threads=threads)
+        final_clip.write_videofile(video_path, threads=threads)
+        success(f'Wrote Video to "{video_path}"')
+        return video_path
 
-        success(f'Wrote Video to "{combined_image_path}"')
-        return combined_image_path
+    # ── Log ──
 
-    def _write_log(self, output_video_path: str) -> str:
-        log_path = output_video_path.replace(".mp4", "_info.txt")
-
+    def _write_log(self) -> str:
+        log_path = os.path.join(self._output_dir, "info.txt")
         duration_mins = int(self._duration // 60)
         duration_secs = round(self._duration % 60, 2)
 
         lines = [
-            "=" * 60,
-            "VIDEO GENERATION LOG",
-            "=" * 60,
-            "",
+            "=" * 60, "VIDEO GENERATION LOG", "=" * 60, "",
+            f"Video ID:          {self._video_id}",
             f"Generated at:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Output file:       {output_video_path}",
+            f"Source folder:     {self._source_dir}",
+            f"Output folder:     {self._output_dir}",
             "",
             "--- CONTENT ---",
             f"Niche:             {self._niche}",
@@ -443,74 +648,91 @@ Story for context:
             f"Topic:             {self.subject}",
             f"Title:             {self.metadata['title']}",
             f"Description:       {self.metadata['description']}",
-            "",
-            "--- SCRIPT ---",
-            self.script,
-            "",
+            "", "--- SCRIPT ---", self.script, "",
             "--- MEDIA ---",
             f"TTS voice:         {get_tts_voice()}",
+            f"Mood:              {getattr(self, '_mood', 'N/A') or 'random'}",
             f"Background music:  {os.path.basename(self._bg_song)}",
             f"Duration:          {duration_mins}m {duration_secs}s ({round(self._duration, 2)}s)",
-            f"Images generated:  {len(self.images)}",
+            f"Images:            {len(self.images)}",
             f"Resolution:        1080x1920 (9:16)",
             f"FPS:               30",
             "",
             "--- CONFIG ---",
             f"Ollama model:      {get_ollama_model() or 'selected at startup'}",
-            f"Image model:       {get_nanobanana2_model()}",
-            f"Image aspect:      {get_nanobanana2_aspect_ratio()}",
+            f"Image provider:    {get_image_provider()}",
+            f"Image model:       {'flux-dev' if get_image_provider() == 'replicate' else get_nanobanana2_model()}",
             f"STT provider:      {get_stt_provider()}",
-            f"Whisper model:     {get_whisper_model()}",
             f"Font:              {get_font()}",
-            f"ImageMagick:       {get_imagemagick_path()}",
             f"Threads:           {get_threads()}",
-            "",
-            "--- IMAGE PROMPTS ---",
+            "", "--- IMAGE PROMPTS ---",
         ]
-
-        for i, prompt in enumerate(self.image_prompts, 1):
-            lines.append(f"  {i}. {prompt}")
-
-        lines.append("")
-        lines.append("=" * 60)
+        for i, p in enumerate(self.image_prompts, 1):
+            lines.append(f"  {i}. {p}")
+        lines.extend(["", "=" * 60])
 
         with open(log_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
-
         success(f'Log saved to "{log_path}"')
         return log_path
 
+    # ── Resume support ──
+
+    @staticmethod
+    def find_resumable() -> List[dict]:
+        """Find videos that errored or didn't complete."""
+        state = _load_state()
+        resumable = []
+        for vid, info_data in state.items():
+            status = info_data.get("status", "")
+            if status != "complete":
+                completed = info_data.get("completed_steps", [])
+                last_err = info_data.get("last_error_step", "")
+                last_msg = info_data.get("last_error", "")
+                topic = info_data.get("topic_text", vid)
+                resumable.append({
+                    "video_id": vid,
+                    "topic": topic,
+                    "completed_steps": completed,
+                    "last_error_step": last_err,
+                    "last_error": last_msg,
+                    "niche": info_data.get("niche", ""),
+                    "language": info_data.get("language", "English"),
+                })
+        return resumable
+
+    # ── Main pipeline ──
+
     def generate_video(self, tts_instance: TTS) -> str:
-        self.generate_topic()
-        self.generate_script()
-        self.generate_metadata()
-        self.generate_prompts()
+        try:
+            self.generate_topic()
+            self.generate_script()
+            self._detect_mood()
+            self.generate_metadata()
+            self.generate_prompts()
+            self.generate_images()
 
-        for prompt in self.image_prompts:
-            self.generate_image(prompt)
+            if not self.images:
+                self._mark_error("images", "No images generated")
+                error("No images were generated. Check your config (image_provider, API keys).")
+                return None
 
-        if not self.images:
-            error("No images were generated. Check your nanobanana2_api_key in config.json.")
+            self.generate_script_to_speech(tts_instance)
+            self.combine()
+            self._mark_step("combine")
+            self._write_log()
+            self._mark_complete()
+
+            if get_verbose():
+                info(f" => Video complete: {self._output_dir}")
+
+            return self._output_dir
+
+        except Exception as e:
+            # Find which step failed
+            for step in self.STEPS:
+                if not self._is_step_done(step):
+                    self._mark_error(step, str(e))
+                    break
+            error(f"Video generation failed: {str(e)}")
             return None
-
-        self.generate_script_to_speech(tts_instance)
-
-        path = self.combine()
-
-        # Copy final video to output/ with readable filename
-        safe_title = re.sub(r'[^\w\s-]', '', self.metadata["title"])[:50].strip()
-        safe_title = re.sub(r'\s+', '_', safe_title)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"{safe_title}_{timestamp}.mp4"
-        output_path = os.path.join(self._output_dir, output_filename)
-
-        shutil.copy2(path, output_path)
-        success(f'Video saved to "{output_path}"')
-
-        # Write log file alongside video
-        self._write_log(output_path)
-
-        if get_verbose():
-            info(f" => Generated Video: {output_path}")
-
-        return output_path
