@@ -19,6 +19,7 @@ from moviepy.video.fx.all import crop
 from moviepy.config import change_settings
 from moviepy.video.tools.subtitles import SubtitlesClip
 from datetime import datetime
+from termcolor import colored
 
 # Set ImageMagick Path
 change_settings({"IMAGEMAGICK_BINARY": get_imagemagick_path()})
@@ -64,28 +65,25 @@ class VideoGenerator:
 
     def generate_script(self) -> str:
         prompt = f"""
-You are a viral YouTube Shorts storyteller.
+You are a viral short-form storyteller.
 
-Write a very short emotional story with a twist.
+Write a very short story with:
+- A strong emotional hook in the first sentence
+- A simple story (2-4 sentences)
+- A surprising twist ending
+- A powerful life lesson
 
-Structure:
-1. First line MUST be a powerful hook that creates curiosity or shock.
-2. Continue with a simple story (2-3 short sentences).
-3. Add a surprising twist near the end.
-4. End with a strong, memorable life lesson.
-
-Style rules:
-- Use very short sentences (5-10 words each)
+Rules:
+- Keep sentences very short (5-10 words each)
 - Use simple, everyday words
 - Make it emotional or shocking
-- Sound like real human storytelling, not AI
-- No explanations, no introductions
-- No filler words
+- Sound like a real person telling a story, not AI
+- Do NOT explain anything
+- No introductions, no filler words
 - No hashtags, no emojis, no quotation marks
-- No markdown or formatting
+- No markdown, no formatting, no titles
 
-Length:
-- Maximum 80 words total
+Total length: under 80 words.
 
 ONLY RETURN THE RAW STORY TEXT. NOTHING ELSE.
 
@@ -93,15 +91,16 @@ Topic: {self.subject}
 Language: {self.language}
 """
         completion = self.generate_response(prompt)
-        completion = re.sub(r"\*", "", completion)
+        completion = re.sub(r"[*\"#]", "", completion).strip()
 
         if not completion:
             error("The generated script is empty.")
             return
 
-        if len(completion) > 5000:
+        # Enforce ~80 word limit - retry if too long
+        if len(completion.split()) > 100:
             if get_verbose():
-                warning("Generated Script is too long. Retrying...")
+                warning(f"Generated script too long ({len(completion.split())} words). Retrying...")
             return self.generate_script()
 
         self.script = completion
@@ -125,33 +124,27 @@ Language: {self.language}
         return self.metadata
 
     def generate_prompts(self) -> List[str]:
-        n_prompts = len(self.script) / 3
+        # For short videos (~80 words), 3-5 images is optimal
+        n_prompts = max(3, min(5, len(self.script.split('.')) - 1))
 
         prompt = f"""
-        Generate {n_prompts} Image Prompts for AI Image Generation,
-        depending on the subject of a video.
-        Subject: {self.subject}
+Generate exactly {n_prompts} image prompts for AI image generation.
+Each prompt should describe a vivid, cinematic scene that matches the story.
 
-        The image prompts are to be returned as
-        a JSON-Array of strings.
+Subject: {self.subject}
 
-        Each search term should consist of a full sentence,
-        always add the main subject of the video.
+Rules:
+- Return ONLY a JSON array of strings, nothing else
+- Each prompt should be one detailed sentence
+- Make prompts emotional, dramatic, and visually striking
+- Prompts should follow the story progression
 
-        Be emotional and use interesting adjectives to make the
-        Image Prompt as detailed as possible.
+Example format:
+["scene 1 description", "scene 2 description", "scene 3 description"]
 
-        YOU MUST ONLY RETURN THE JSON-ARRAY OF STRINGS.
-        YOU MUST NOT RETURN ANYTHING ELSE.
-        YOU MUST NOT RETURN THE SCRIPT.
-
-        The search terms must be related to the subject of the video.
-        Here is an example of a JSON-Array of strings:
-        ["image prompt 1", "image prompt 2", "image prompt 3"]
-
-        For context, here is the full text:
-        {self.script}
-        """
+Story for context:
+{self.script}
+"""
 
         completion = (
             str(self.generate_response(prompt))
@@ -200,8 +193,8 @@ Language: {self.language}
         self.images.append(image_path)
         return image_path
 
-    def generate_image(self, prompt: str) -> str:
-        print(f"Generating Image using Nano Banana 2 API: {prompt}")
+    def generate_image(self, prompt: str, max_retries: int = 3) -> str:
+        print(f"Generating Image using Nano Banana 2 API: {prompt[:80]}...")
 
         api_key = get_nanobanana2_api_key()
         if not api_key:
@@ -221,36 +214,49 @@ Language: {self.language}
             },
         }
 
-        try:
-            response = requests.post(
-                endpoint,
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json=payload,
-                timeout=300,
-            )
-            response.raise_for_status()
-            body = response.json()
+        import time as _time
 
-            candidates = body.get("candidates", [])
-            for candidate in candidates:
-                content = candidate.get("content", {})
-                for part in content.get("parts", []):
-                    inline_data = part.get("inlineData") or part.get("inline_data")
-                    if not inline_data:
-                        continue
-                    data = inline_data.get("data")
-                    mime_type = inline_data.get("mimeType") or inline_data.get("mime_type", "")
-                    if data and str(mime_type).startswith("image/"):
-                        image_bytes = base64.b64decode(data)
-                        return self._persist_image(image_bytes, "Nano Banana 2 API")
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    endpoint,
+                    headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=300,
+                )
 
-            if get_verbose():
-                warning(f"Nano Banana 2 did not return an image payload. Response: {body}")
-            return None
-        except Exception as e:
-            if get_verbose():
-                warning(f"Failed to generate image with Nano Banana 2 API: {str(e)}")
-            return None
+                if response.status_code == 429:
+                    wait = 15 * (attempt + 1)
+                    warning(f"Rate limited. Waiting {wait}s before retry ({attempt+1}/{max_retries})...")
+                    _time.sleep(wait)
+                    continue
+
+                response.raise_for_status()
+                body = response.json()
+
+                candidates = body.get("candidates", [])
+                for candidate in candidates:
+                    content = candidate.get("content", {})
+                    for part in content.get("parts", []):
+                        inline_data = part.get("inlineData") or part.get("inline_data")
+                        if not inline_data:
+                            continue
+                        data = inline_data.get("data")
+                        mime_type = inline_data.get("mimeType") or inline_data.get("mime_type", "")
+                        if data and str(mime_type).startswith("image/"):
+                            image_bytes = base64.b64decode(data)
+                            return self._persist_image(image_bytes, "Nano Banana 2 API")
+
+                if get_verbose():
+                    warning(f"Nano Banana 2 did not return an image payload. Response: {body}")
+                return None
+            except Exception as e:
+                if get_verbose():
+                    warning(f"Failed to generate image with Nano Banana 2 API: {str(e)}")
+                if attempt < max_retries - 1:
+                    _time.sleep(5)
+                    continue
+                return None
 
     def generate_script_to_speech(self, tts_instance: TTS) -> str:
         path = os.path.join(ROOT_DIR, ".mp", str(uuid4()) + ".wav")
@@ -482,6 +488,10 @@ Language: {self.language}
 
         for prompt in self.image_prompts:
             self.generate_image(prompt)
+
+        if not self.images:
+            error("No images were generated. Check your nanobanana2_api_key in config.json.")
+            return None
 
         self.generate_script_to_speech(tts_instance)
 

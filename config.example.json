@@ -7,7 +7,7 @@
   "twitter_language": "English",
   "nanobanana2_api_base_url": "https://generativelanguage.googleapis.com/v1beta",
   "nanobanana2_api_key": "",
-  "nanobanana2_model": "gemini-3.1-flash-image-preview",
+  "nanobanana2_model": "gemini-2.5-flash-image",
   "nanobanana2_aspect_ratio": "9:16",
   "threads": 2,
   "zip_url": "",

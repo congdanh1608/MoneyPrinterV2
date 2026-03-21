@@ -10,11 +10,7 @@ from uuid import uuid4
 from constants import *
 from classes.Tts import TTS
 from termcolor import colored
-from classes.Twitter import Twitter
-from classes.YouTube import YouTube
 from prettytable import PrettyTable
-from classes.Outreach import Outreach
-from classes.AFM import AffiliateMarketing
 from classes.VideoGenerator import VideoGenerator
 from llm_provider import list_models, select_model, get_active_model
 
@@ -66,6 +62,7 @@ def main():
 
     # Start the selected option
     if user_input == 1:
+        from classes.YouTube import YouTube
         info("Starting YT Shorts Automater...")
 
         cached_accounts = get_accounts("youtube")
@@ -215,6 +212,7 @@ def main():
                             info(" => Climbing Options Ladder...", False)
                         break
     elif user_input == 2:
+        from classes.Twitter import Twitter
         info("Starting Twitter Bot...")
 
         cached_accounts = get_accounts("twitter")
@@ -352,6 +350,8 @@ def main():
                             info(" => Climbing Options Ladder...", False)
                         break
     elif user_input == 3:
+        from classes.AFM import AffiliateMarketing
+        from classes.Twitter import Twitter
         info("Starting Affiliate Marketing...")
 
         cached_products = get_products()
@@ -413,6 +413,7 @@ def main():
                 afm.share_pitch("twitter")
 
     elif user_input == 4:
+        from classes.Outreach import Outreach
         info("Starting Outreach...")
 
         outreach = Outreach()
@@ -428,11 +429,29 @@ def main():
             error("default_niche is not set in config.json. Please set it first.")
             return
 
-        info(f" => Niche: {niche}, Language: {language}")
+        try:
+            count = int(question("How many videos to generate? (default 1): ").strip() or "1")
+            if count < 1:
+                count = 1
+        except ValueError:
+            count = 1
 
-        generator = VideoGenerator(niche, language)
+        info(f" => Niche: {niche}, Language: {language}, Count: {count}")
+
         tts = TTS()
-        generator.generate_video(tts)
+        generated = 0
+        for i in range(count):
+            if count > 1:
+                info(f"\n{'='*40} Video {i+1}/{count} {'='*40}")
+            generator = VideoGenerator(niche, language)
+            result = generator.generate_video(tts)
+            if result:
+                generated += 1
+
+        if generated > 0:
+            success(f"Done! Generated {generated} video(s) in output/ folder.")
+        else:
+            error("No videos were generated. Check your config.")
     elif user_input == 6:
         if get_verbose():
             print(colored(" => Quitting...", "blue"))
