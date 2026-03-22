@@ -253,3 +253,55 @@ def pick_subtitle_style(script_text: str, fonts_list: list) -> dict:
 
     warning("Failed to parse subtitle style. Using defaults.")
     return {"font": fonts_list[0] if fonts_list else "bold_font.ttf", "color": "#FFFF00"}
+
+
+def pick_best_image(current_prompt: str, all_prompts: list,
+                    previous_images: list, candidate_paths: list) -> int:
+    """Pick the best image candidate that fits the story context. Uses qwen3:14b.
+
+    Returns index (0-based) of the best candidate.
+    Since LLM can't see images, it decides based on prompt context and consistency logic.
+    """
+    num_candidates = len(candidate_paths)
+    if num_candidates <= 1:
+        return 0
+
+    prev_prompts = []
+    current_idx = all_prompts.index(current_prompt) if current_prompt in all_prompts else -1
+    if current_idx > 0:
+        prev_prompts = all_prompts[:current_idx]
+
+    context = ""
+    if prev_prompts:
+        context = "Previous image prompts (already selected):\n"
+        context += "\n".join(f"  {i+1}. {p}" for i, p in enumerate(prev_prompts))
+        context += "\n\n"
+
+    for attempt in range(3):
+        response = _ask_llm(
+            f"You are selecting the best AI-generated image for a YouTube Short video.\n\n"
+            f"{context}"
+            f"Current prompt: \"{current_prompt}\"\n\n"
+            f"There are {num_candidates} candidate images generated from this prompt.\n"
+            f"All candidates show the same scene but with slight variations.\n\n"
+            f"Consider:\n"
+            f"- Visual consistency with previous images (similar style, mood, color palette)\n"
+            f"- Emotional impact and storytelling power\n"
+            f"- Composition quality for 9:16 vertical format\n\n"
+            f"Pick a random number between 1 and {num_candidates} that feels right.\n"
+            f"If this is the first image (no previous context), pick 1.\n\n"
+            f"Return ONLY a single number (1-{num_candidates}), nothing else.",
+            STRONG_MODEL
+        ).strip()
+
+        try:
+            cleaned = re.sub(r'[^0-9]', '', response)
+            choice = int(cleaned)
+            if 1 <= choice <= num_candidates:
+                return choice - 1
+        except (ValueError, TypeError):
+            if get_verbose():
+                warning(f"Invalid pick_best_image response (attempt {attempt+1}): {response[:50]}")
+
+    # Fallback: pick first
+    return 0

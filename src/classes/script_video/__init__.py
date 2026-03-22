@@ -12,12 +12,12 @@ from typing import List
 from config import *
 from status import *
 from utils import get_available_moods
-from classes.video_generator.image_providers import generate_image_freepik
 from .progress import ProgressTracker, STEPS
 from .tts_generator import generate_segment_tts
 from .composer import compose_script_video
 from .logger import write_script_log
 from .smart_brain import pick_voice_profile, reorder_images, pick_music, pick_subtitle_style
+from .image_generator import ScriptImageGenerator
 
 AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg")
 
@@ -63,16 +63,6 @@ class ScriptVideoGenerator:
             if f.lower().endswith(supported)
         ])
 
-    def _persist_image(self, image_bytes: bytes, provider_label: str) -> str:
-        existing = self._load_existing_images()
-        idx = len(existing) + 1
-        image_path = os.path.join(self._images_dir, f"{idx:02d}.png")
-        with open(image_path, "wb") as f:
-            f.write(image_bytes)
-        if get_verbose():
-            info(f' => Wrote image from {provider_label} to "{image_path}"')
-        return image_path
-
     # ── Pipeline steps ──
 
     def _select_profile(self) -> str:
@@ -84,9 +74,20 @@ class ScriptVideoGenerator:
         voicebox_url = get_voicebox_url().rstrip("/")
         instructs = [seg.get("instruct", "") for seg in self._segments if seg.get("instruct")]
 
-        r = requests.get(f"{voicebox_url}/profiles", timeout=10)
-        r.raise_for_status()
-        profiles = r.json()
+        # Retry connection to VoiceBox (may be starting up)
+        profiles = None
+        for attempt in range(3):
+            try:
+                r = requests.get(f"{voicebox_url}/profiles", timeout=10)
+                r.raise_for_status()
+                profiles = r.json()
+                break
+            except Exception as e:
+                if attempt < 2:
+                    warning(f"VoiceBox not reachable (attempt {attempt+1}/3): {e}. Retrying in 5s...")
+                    _time.sleep(5)
+                else:
+                    raise RuntimeError(f"Cannot reach VoiceBox at {voicebox_url} after 3 attempts: {e}")
 
         if not profiles:
             raise RuntimeError("No VoiceBox profiles found.")
@@ -132,29 +133,22 @@ class ScriptVideoGenerator:
 
         existing = self._load_existing_images()
         start_from = len(existing)
+        remaining_prompts = prompts[start_from:]
 
         if start_from > 0:
             info(f" => Found {start_from} existing images, resuming from {start_from + 1}")
 
-        for i, prompt in enumerate(prompts):
-            if i < start_from:
-                continue
+        if remaining_prompts:
+            generator = ScriptImageGenerator(self._images_dir)
+            if not generator.is_available():
+                self._progress.mark_error("images", "Google Labs not configured")
+                raise RuntimeError("Google Labs image provider not configured. Check config.json.")
 
-            result = None
-            for attempt in range(3):
-                result = generate_image_freepik(prompt, self._persist_image)
-                if result:
-                    break
-                if attempt < 2:
-                    warning(f"Image {i+1} failed (attempt {attempt+1}/3). Retrying in 10s...")
-                    _time.sleep(10)
-
-            if result is None:
-                self._progress.mark_error("images", f"Failed image {i+1}/{len(prompts)} after 3 retries")
-                raise RuntimeError(f"Image generation failed at image {i+1}. Run again to resume.")
-
-            if i < len(prompts) - 1:
-                _time.sleep(10)
+            try:
+                generator.generate_images(remaining_prompts, aspect_ratio="portrait")
+            except Exception as e:
+                self._progress.mark_error("images", str(e))
+                raise
 
         self._progress.mark_step("images")
         return self._load_existing_images()
@@ -227,9 +221,49 @@ class ScriptVideoGenerator:
             self._progress.init()
 
             profile_id = self._select_profile()
-            audio_path = self._generate_tts(profile_id)
 
-            images = self._generate_images()
+            # Run TTS and image generation in parallel (they are independent)
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            tts_done = self._progress.is_step_done("tts")
+            images_done = self._progress.is_step_done("images")
+
+            audio_path = None
+            images = None
+            errors = []
+
+            if tts_done and images_done:
+                # Both resumed
+                audio_path = self._generate_tts(profile_id)
+                images = self._generate_images()
+            elif tts_done or images_done:
+                # One done, run the other
+                if tts_done:
+                    audio_path = self._generate_tts(profile_id)
+                    images = self._generate_images()
+                else:
+                    images = self._generate_images()
+                    audio_path = self._generate_tts(profile_id)
+            else:
+                # Neither done — run in parallel
+                info(" => Running TTS and image generation in parallel...")
+
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    future_tts = executor.submit(self._generate_tts, profile_id)
+                    future_images = executor.submit(self._generate_images)
+
+                    for future in as_completed([future_tts, future_images]):
+                        try:
+                            future.result()
+                        except Exception as e:
+                            errors.append(str(e))
+
+                if errors:
+                    raise RuntimeError(f"Parallel step failed: {'; '.join(errors)}")
+
+                audio_path = future_tts.result()
+                images = future_images.result()
+
             if not images:
                 self._progress.mark_error("images", "No images generated")
                 error("No images were generated.")
@@ -238,10 +272,23 @@ class ScriptVideoGenerator:
             images = self._reorder_images(images)
             style = self._decide_style()
 
-            video_path, timing, duration = compose_script_video(
-                images, audio_path, self._output_dir, self._segments, style,
-            )
-            self._progress.mark_step("compose")
+            # Compose with 1 retry on failure (e.g. RAM issue)
+            compose_error = None
+            for compose_attempt in range(2):
+                try:
+                    video_path, timing, duration = compose_script_video(
+                        images, audio_path, self._output_dir, self._segments, style,
+                    )
+                    self._progress.mark_step("compose")
+                    compose_error = None
+                    break
+                except Exception as e:
+                    compose_error = e
+                    if compose_attempt == 0:
+                        warning(f"Compose failed: {e}. Retrying once...")
+                        _time.sleep(3)
+            if compose_error:
+                raise compose_error
 
             # Save timing info
             prog = self._progress.get()
@@ -265,12 +312,23 @@ class ScriptVideoGenerator:
             success(f" => Video complete: {self._output_dir}")
             return self._output_dir
 
-        except Exception as e:
+        except RuntimeError as e:
+            # Known errors (VoiceBox down, image blocked, etc.)
             for step in STEPS:
                 if not self._progress.is_step_done(step):
                     self._progress.mark_error(step, str(e))
                     break
             error(f"Video generation failed: {str(e)}")
+            info("Run again to resume from the failed step.")
+            return None
+        except Exception as e:
+            # Unexpected errors
+            for step in STEPS:
+                if not self._progress.is_step_done(step):
+                    self._progress.mark_error(step, f"Unexpected: {str(e)}")
+                    break
+            error(f"Unexpected error: {str(e)}")
+            info("Run again to resume from the failed step.")
             return None
 
     # ── Static helpers ──

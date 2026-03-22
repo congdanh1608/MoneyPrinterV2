@@ -7,6 +7,14 @@ from termcolor import colored
 
 ROOT_DIR = os.path.dirname(sys.path[0])
 
+def _read_script_video_config() -> dict:
+    """Read script_video_config.json, falling back to config.json for shared keys."""
+    path = os.path.join(ROOT_DIR, "script_video_config.json")
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    return {}
+
 def assert_folder_structure() -> None:
     """
     Make sure that the nessecary folder structure is present.
@@ -358,16 +366,32 @@ def get_tts_provider() -> str:
         return json.load(file).get("tts_provider", "")
 
 def get_voicebox_url() -> str:
-    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
-        return json.load(file).get("voicebox_url", "http://127.0.0.1:17493")
+    sv = _read_script_video_config()
+    return sv.get("voicebox_url") or "http://127.0.0.1:17493"
 
 def get_voicebox_profile_id() -> str:
-    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
-        return json.load(file).get("voicebox_profile_id", "")
+    sv = _read_script_video_config()
+    return sv.get("voicebox_profile_id", "")
 
 def get_voicebox_language() -> str:
-    with open(os.path.join(ROOT_DIR, "config.json"), "r") as file:
-        return json.load(file).get("voicebox_language", "en")
+    sv = _read_script_video_config()
+    return sv.get("voicebox_language", "en")
+
+def get_google_labs_project_id() -> str:
+    return _read_script_video_config().get("google_labs_project_id", "")
+
+
+def get_google_labs_image_model() -> str:
+    return _read_script_video_config().get("google_labs_image_model", "NARWHAL")
+
+def get_firefox_profile_path() -> str:
+    return _read_script_video_config().get("firefox_profile_path", "")
+
+def get_google_labs_aspect_ratio() -> str:
+    return _read_script_video_config().get("google_labs_aspect_ratio", "9:16")
+
+def get_google_labs_images_per_prompt() -> int:
+    return _read_script_video_config().get("google_labs_images_per_prompt", 2)
 
 def get_default_niche() -> str:
     """

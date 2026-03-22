@@ -61,8 +61,8 @@ def main():
             print(f"Invalid input: {e}")
 
 
-    # Start the selected option
-    if user_input == 1:
+    # Menu order: 1=Script Video, 2=Generate Short, 3=YouTube, 4=Twitter, 5=AFM, 6=Outreach, 7=Quit
+    if user_input == 3:
         from classes.YouTube import YouTube
         info("Starting YT Shorts Automater...")
 
@@ -212,7 +212,7 @@ def main():
                         if get_verbose():
                             info(" => Climbing Options Ladder...", False)
                         break
-    elif user_input == 2:
+    elif user_input == 4:
         from classes.Twitter import Twitter
         info("Starting Twitter Bot...")
 
@@ -350,7 +350,7 @@ def main():
                         if get_verbose():
                             info(" => Climbing Options Ladder...", False)
                         break
-    elif user_input == 3:
+    elif user_input == 5:
         from classes.AFM import AffiliateMarketing
         from classes.Twitter import Twitter
         info("Starting Affiliate Marketing...")
@@ -413,14 +413,14 @@ def main():
                 afm.generate_pitch()
                 afm.share_pitch("twitter")
 
-    elif user_input == 4:
+    elif user_input == 6:
         from classes.Outreach import Outreach
         info("Starting Outreach...")
 
         outreach = Outreach()
 
         outreach.start()
-    elif user_input == 5:
+    elif user_input == 2:
         info("Starting Generate Youtube Short (No Upload)...")
 
         # Always show image provider selection
@@ -544,9 +544,9 @@ def main():
             success(f"Done! Generated {generated} video(s) in output/ folder.")
         else:
             error("No videos were generated. Check your config.")
-    elif user_input == 6:
+    elif user_input == 1:
         from classes.script_video import ScriptVideoGenerator
-        info("Starting Short Youtube (Provide Script)...")
+        info("Starting Youtube (Provide Script - VoiceBox - Banana)...")
 
         # Check for resumable
         resumable = ScriptVideoGenerator.find_resumable()
@@ -629,7 +629,7 @@ def main():
             success(f"Done! Generated {generated} video(s) from scripts.")
         else:
             error("No videos were generated.")
-    elif user_input == 7:
+    elif user_input == len(OPTIONS):
         if get_verbose():
             print(colored(" => Quitting...", "blue"))
         sys.exit(0)

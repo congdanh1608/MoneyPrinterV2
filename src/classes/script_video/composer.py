@@ -44,9 +44,9 @@ def compose_script_video(
     sub_color = style.get("color", "#FFFF00")
 
     gen = lambda txt: TextClip(
-        txt, font=font_file, fontsize=100,
-        color=sub_color, stroke_color="black", stroke_width=5,
-        size=(1080, 1920), method="caption",
+        txt, font=font_file, fontsize=65,
+        color=sub_color, stroke_color="black", stroke_width=3,
+        size=(900, None), method="caption",
     )
 
     print(colored("[+] Composing video...", "blue"))
@@ -75,8 +75,7 @@ def compose_script_video(
     try:
         srt_path = generate_subtitles(audio_path, output_dir)
         equalize_subtitles(srt_path, 10)
-        subtitles = SubtitlesClip(srt_path, gen)
-        subtitles.set_pos(("center", "bottom"))
+        subtitles = SubtitlesClip(srt_path, gen).set_pos(("center", 0.85), relative=True)
     except Exception as e:
         warning(f"Subtitles failed, continuing without: {e}")
 
