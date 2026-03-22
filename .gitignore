@@ -1,5 +1,6 @@
 __pycache__
 config.json
+script_video_config.json
 .mp/
 venv/
 Songs/
