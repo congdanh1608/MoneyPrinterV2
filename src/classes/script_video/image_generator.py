@@ -18,8 +18,6 @@ class ScriptImageGenerator:
     """
 
     MAX_RETRIES = 3
-    DELAY_MIN = 5
-    DELAY_MAX = 10
 
     def __init__(self, output_dir: str, provider: GoogleLabsProvider):
         self._output_dir = output_dir
@@ -49,11 +47,7 @@ class ScriptImageGenerator:
                     f"Image generation failed at image {i+1}/{len(prompts)}. Run again to resume."
                 )
 
-            if i < len(prompts) - 1:
-                delay = random.uniform(self.DELAY_MIN, self.DELAY_MAX)
-                if get_verbose():
-                    info(f" => Waiting {delay:.1f}s before next image...")
-                _time.sleep(delay)
+            # No delay — generate next image immediately
 
         return paths
 

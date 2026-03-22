@@ -74,7 +74,7 @@ def compose_script_video(
     subtitles = None
     try:
         srt_path = generate_subtitles(audio_path, output_dir)
-        equalize_subtitles(srt_path, 10)
+        equalize_subtitles(srt_path, 30)
         subtitles = SubtitlesClip(srt_path, gen).set_pos(("center", 0.85), relative=True)
     except Exception as e:
         warning(f"Subtitles failed, continuing without: {e}")

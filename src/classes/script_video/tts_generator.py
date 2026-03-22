@@ -12,15 +12,12 @@ from .smart_brain import plan_pause_timing
 
 
 def _cleanup_voicebox(voicebox_url: str, gen_id: str) -> None:
-    """Delete generated audio + clear cache on VoiceBox server."""
+    """Delete generated audio on VoiceBox server."""
     try:
         requests.delete(f"{voicebox_url}/history/{gen_id}", timeout=5)
     except Exception:
         pass
-    try:
-        requests.post(f"{voicebox_url}/cache/clear", timeout=5)
-    except Exception:
-        pass
+
 
 
 def generate_segment_tts(

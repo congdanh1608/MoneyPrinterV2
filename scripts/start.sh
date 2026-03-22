@@ -30,6 +30,8 @@ cd "$MPV2_DIR"
 source venv/bin/activate
 python3 src/main.py
 
+echo -e "${YELLOW}Clearing VoiceBox cache...${NC}"
+curl -s -X POST http://127.0.0.1:17493/cache/clear > /dev/null 2>&1
 echo -e "${YELLOW}Stopping VoiceBox (PID: $VOICEBOX_PID)...${NC}"
 kill $VOICEBOX_PID 2>/dev/null
 echo -e "${GREEN}Done!${NC}"
