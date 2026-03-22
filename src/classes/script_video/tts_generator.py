@@ -8,6 +8,7 @@ import soundfile as sf
 
 from config import get_voicebox_url
 from status import info, success, warning
+from .smart_brain import plan_pause_timing
 
 
 def _cleanup_voicebox(voicebox_url: str, gen_id: str) -> None:
@@ -100,8 +101,20 @@ def generate_segment_tts(
     if not all_audio:
         raise RuntimeError("No audio segments generated.")
 
-    combined = np.concatenate(all_audio)
-    sf.write(audio_path, combined, 24000)
+    # Use LLM to decide pause timing between segments
+    SAMPLE_RATE = 24000
+    info(" => Planning pause timing between segments...")
+    pauses = plan_pause_timing(segments)
+
+    audio_with_gaps = []
+    for i, audio_data in enumerate(all_audio):
+        audio_with_gaps.append(audio_data)
+        pause_sec = pauses[i] if i < len(pauses) else 0.3
+        silence = np.zeros(int(pause_sec * SAMPLE_RATE))
+        audio_with_gaps.append(silence)
+
+    combined = np.concatenate(audio_with_gaps)
+    sf.write(audio_path, combined, SAMPLE_RATE)
     total_elapsed = round(_time.time() - total_start, 1)
     total_duration = round(len(combined) / 24000, 1)
     success(f" => Combined {len(all_audio)} segments -> {audio_path} ({total_duration}s audio, took {total_elapsed}s)")

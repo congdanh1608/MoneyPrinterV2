@@ -92,6 +92,63 @@ def reorder_images(segments: list, image_prompts: list) -> list:
     return image_prompts
 
 
+def plan_pause_timing(segments: list) -> list:
+    """Decide pause duration after each segment. Uses qwen3:8b.
+
+    Returns list of floats (seconds) — one per segment.
+    """
+    seg_list = "\n".join([
+        f"{i+1}. \"{seg['text']}\" (instruct: {seg.get('instruct', 'none')})"
+        for i, seg in enumerate(segments)
+    ])
+
+    for attempt in range(3):
+        response = _ask_llm(
+            f"You are timing pauses between narration sentences for a YouTube Short video.\n\n"
+            f"Segments:\n{seg_list}\n\n"
+            f"Decide how many seconds of silence to add AFTER each segment.\n"
+            f"Guidelines:\n"
+            f"- Normal sentences: 0.2-0.4s\n"
+            f"- Emphasis/emotional sentences: 0.4-0.6s\n"
+            f"- Before twist or mood change: 0.6-0.9s\n"
+            f"- Before final punchline/moral: 0.8-1.2s\n"
+            f"- After the very last sentence: 1.0-1.5s (let it land)\n\n"
+            f"Return ONLY a JSON array of {len(segments)} floats.\n"
+            f"Example: [0.3, 0.3, 0.5, 0.8, 0.3, 1.2]",
+            FAST_MODEL
+        ).strip()
+
+        try:
+            cleaned = response.replace("```json", "").replace("```", "").strip()
+            match = re.search(r'\[[\d\s.,]+\]', cleaned)
+            if match:
+                pauses = json.loads(match.group())
+            else:
+                pauses = json.loads(cleaned)
+
+            if len(pauses) == len(segments) and all(0 <= p <= 2.0 for p in pauses):
+                info(f" => LLM planned pauses: {pauses}")
+                return pauses
+        except (json.JSONDecodeError, TypeError):
+            if get_verbose():
+                warning(f"Invalid pause response (attempt {attempt+1}): {response[:100]}")
+
+    # Fallback: simple rule-based
+    warning("Failed to get LLM pauses. Using rule-based fallback.")
+    pauses = []
+    for i, seg in enumerate(segments):
+        weight = seg.get("duration_weight", 1.0)
+        if i == len(segments) - 1:
+            pauses.append(1.2)
+        elif seg.get("is_hook"):
+            pauses.append(0.6)
+        elif weight >= 1.5:
+            pauses.append(0.7)
+        else:
+            pauses.append(0.3)
+    return pauses
+
+
 def calculate_image_timing(segments: list, audio_duration: float, num_images: int) -> list:
     """Calculate timing from duration_weight. No LLM needed."""
     weights = [seg.get("duration_weight", 1.0) for seg in segments]

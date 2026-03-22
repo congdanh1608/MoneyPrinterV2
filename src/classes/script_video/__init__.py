@@ -46,6 +46,12 @@ class ScriptVideoGenerator:
             with open(script_copy, "w") as f:
                 json.dump(script_data, f, indent=2)
 
+        # Save script_path in progress for resume cleanup
+        prog = self._progress.get()
+        if script_path and not prog.get("script_source_path"):
+            prog["script_source_path"] = script_path
+            self._progress.save(prog)
+
     def _full_narration(self) -> str:
         return " ".join(seg["text"] for seg in self._segments if seg.get("text"))
 
@@ -250,9 +256,11 @@ class ScriptVideoGenerator:
             )
             self._progress.mark_complete()
 
-            if self._script_path and os.path.exists(self._script_path):
-                os.remove(self._script_path)
-                info(f" => Deleted source script: {self._script_path}")
+            # Delete original script from source/scripts/
+            source_path = self._script_path or self._progress.get().get("script_source_path", "")
+            if source_path and os.path.exists(source_path):
+                os.remove(source_path)
+                info(f" => Deleted source script: {source_path}")
 
             success(f" => Video complete: {self._output_dir}")
             return self._output_dir
