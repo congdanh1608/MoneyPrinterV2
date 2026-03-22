@@ -255,53 +255,75 @@ def pick_subtitle_style(script_text: str, fonts_list: list) -> dict:
     return {"font": fonts_list[0] if fonts_list else "bold_font.ttf", "color": "#FFFF00"}
 
 
+VISION_MODEL = "llava:7b-v1.6"
+
+
 def pick_best_image(current_prompt: str, all_prompts: list,
                     previous_images: list, candidate_paths: list) -> int:
-    """Pick the best image candidate that fits the story context. Uses qwen3:14b.
+    """Use LLaVA 7B vision model to compare candidate images visually.
 
-    Returns index (0-based) of the best candidate.
-    Since LLM can't see images, it decides based on prompt context and consistency logic.
+    Sends previous image(s) + candidates to vision model.
+    Picks candidate that best matches style/color/mood of previous images.
+    Falls back to index 0 if vision model fails.
     """
-    num_candidates = len(candidate_paths)
-    if num_candidates <= 1:
+    num = len(candidate_paths)
+    if num <= 1:
         return 0
 
-    prev_prompts = []
-    current_idx = all_prompts.index(current_prompt) if current_prompt in all_prompts else -1
-    if current_idx > 0:
-        prev_prompts = all_prompts[:current_idx]
+    import ollama
 
-    context = ""
-    if prev_prompts:
-        context = "Previous image prompts (already selected):\n"
-        context += "\n".join(f"  {i+1}. {p}" for i, p in enumerate(prev_prompts))
-        context += "\n\n"
+    # Build image list: last previous image (reference) + candidates
+    images = []
+    if previous_images:
+        images.append(previous_images[-1])  # Most recent as reference
+    images.extend(candidate_paths)
 
-    for attempt in range(3):
-        response = _ask_llm(
-            f"You are selecting the best AI-generated image for a YouTube Short video.\n\n"
-            f"{context}"
-            f"Current prompt: \"{current_prompt}\"\n\n"
-            f"There are {num_candidates} candidate images generated from this prompt.\n"
-            f"All candidates show the same scene but with slight variations.\n\n"
-            f"Consider:\n"
-            f"- Visual consistency with previous images (similar style, mood, color palette)\n"
-            f"- Emotional impact and storytelling power\n"
-            f"- Composition quality for 9:16 vertical format\n\n"
-            f"Pick a random number between 1 and {num_candidates} that feels right.\n"
-            f"If this is the first image (no previous context), pick 1.\n\n"
-            f"Return ONLY a single number (1-{num_candidates}), nothing else.",
-            STRONG_MODEL
-        ).strip()
+    # Build prompt based on whether we have reference images
+    if previous_images:
+        prompt = (
+            f"I have a reference image (first image) from a video. "
+            f"Then {num} candidate images follow. "
+            f"Which candidate best matches the reference image's visual style "
+            f"(color palette, art style, mood, lighting)? "
+            f"Return ONLY the candidate number (1-{num}), nothing else."
+        )
+    else:
+        prompt = (
+            f"I have {num} candidate images for a YouTube Short video (9:16 vertical). "
+            f"Which has the best composition and visual quality? "
+            f"Return ONLY one number (1-{num}), nothing else."
+        )
 
+    for attempt in range(2):
         try:
-            cleaned = re.sub(r'[^0-9]', '', response)
-            choice = int(cleaned)
-            if 1 <= choice <= num_candidates:
-                return choice - 1
-        except (ValueError, TypeError):
-            if get_verbose():
-                warning(f"Invalid pick_best_image response (attempt {attempt+1}): {response[:50]}")
+            response = ollama.chat(
+                model=VISION_MODEL,
+                messages=[{"role": "user", "content": prompt, "images": images}],
+            )
+            result = response["message"]["content"].strip().lower()
 
-    # Fallback: pick first
+            # Parse response — look for "image 1", "image 2", "candidate 1", etc.
+            choice = None
+            for n in range(num, 0, -1):
+                if f"image {n}" in result or f"candidate {n}" in result or result.strip() == str(n):
+                    choice = n
+                    break
+
+            # Fallback: extract first number
+            if choice is None:
+                numbers = re.findall(r'\b([1-9])\b', result)
+                if numbers:
+                    choice = int(numbers[0])
+
+            if choice and 1 <= choice <= num:
+                if get_verbose():
+                    info(f" => Vision model picked candidate {choice}/{num}")
+                return choice - 1
+        except Exception as e:
+            if get_verbose():
+                warning(f"Vision model error (attempt {attempt+1}): {e}")
+
+    # Fallback
+    if get_verbose():
+        warning("Vision model failed. Using first candidate.")
     return 0

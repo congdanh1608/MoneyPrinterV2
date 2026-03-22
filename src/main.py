@@ -546,89 +546,120 @@ def main():
             error("No videos were generated. Check your config.")
     elif user_input == 1:
         from classes.script_video import ScriptVideoGenerator
+        from classes.script_video.google_labs import GoogleLabsProvider
         info("Starting Youtube (Provide Script - VoiceBox - Banana)...")
 
-        # Check for resumable
-        resumable = ScriptVideoGenerator.find_resumable()
-        if resumable:
-            info(f"\nFound {len(resumable)} incomplete script video(s):")
-            for idx, r in enumerate(resumable):
-                steps_done = ", ".join(r["completed_steps"]) or "none"
-                err_info = f" | Last error: {r['last_error_step']}" if r["last_error_step"] else ""
-                print(colored(f"  {idx + 1}. {r['title'][:50]} (done: {steps_done}{err_info})", "yellow"))
+        # Shared image provider — browser opens once, stays open for all videos
+        provider = GoogleLabsProvider()
+        if not provider.is_available():
+            error("Google Labs not configured. Check script_video_config.json.")
+            return
 
-            resume_choice = question("\nResume? Enter number, 'all', or 'no' for new: ").strip().lower()
+        try:
+            provider.open_browser()
 
-            if resume_choice != "no":
-                to_resume = []
-                if resume_choice == "all":
-                    to_resume = resumable
-                else:
-                    for part in resume_choice.split(","):
+            # Check for resumable
+            resumable = ScriptVideoGenerator.find_resumable()
+            if resumable:
+                info(f"\nFound {len(resumable)} incomplete script video(s):")
+                for idx, r in enumerate(resumable):
+                    steps_done = ", ".join(r["completed_steps"]) or "none"
+                    err_info = f" | Last error: {r['last_error_step']}" if r["last_error_step"] else ""
+                    print(colored(f"  {idx + 1}. {r['title'][:50]} (done: {steps_done}{err_info})", "yellow"))
+
+                resume_choice = question("\nResume? Enter number, 'all', or 'no' for new: ").strip().lower()
+
+                if resume_choice != "no":
+                    to_resume = []
+                    if resume_choice == "all":
+                        to_resume = resumable
+                    else:
+                        for part in resume_choice.split(","):
+                            try:
+                                idx = int(part.strip()) - 1
+                                if 0 <= idx < len(resumable):
+                                    to_resume.append(resumable[idx])
+                            except ValueError:
+                                pass
+
+                    generated = 0
+                    failed = 0
+                    for r in to_resume:
+                        info(f"\n{'='*40} Resuming: {r['title'][:40]} {'='*40}")
                         try:
-                            idx = int(part.strip()) - 1
-                            if 0 <= idx < len(resumable):
-                                to_resume.append(resumable[idx])
-                        except ValueError:
-                            pass
+                            gen = ScriptVideoGenerator.from_output_folder(r["folder_name"], image_provider=provider)
+                            result = gen.generate()
+                            if result:
+                                generated += 1
+                            else:
+                                failed += 1
+                                warning(f"Skipping '{r['title'][:30]}' — failed. Continuing...")
+                        except Exception as e:
+                            failed += 1
+                            error(f"Resume '{r['title'][:30]}' crashed: {e}")
+                            warning("Skipping to next...")
 
-                generated = 0
-                for r in to_resume:
-                    info(f"\n{'='*40} Resuming: {r['title'][:40]} {'='*40}")
-                    gen = ScriptVideoGenerator.from_output_folder(r["folder_name"])
+                    if generated > 0:
+                        success(f"Done! {generated} resumed, {failed} failed.")
+                    else:
+                        error(f"No videos completed. {failed} failed.")
+                    return
+
+            # Scan scripts
+            scripts = ScriptVideoGenerator.scan_scripts()
+            if not scripts:
+                error("No script files found. Add .json files to source/scripts/")
+                info("Example: source/scripts/my_story.json")
+                return
+
+            info("\n============ AVAILABLE SCRIPTS ============", False)
+            for idx, s in enumerate(scripts):
+                print(colored(f"  {idx + 1}. {s['title']}", "cyan"))
+            info("===========================================\n", False)
+
+            script_choice = question("Select script(s) (number, comma-separated, or 'all'): ").strip().lower()
+
+            selected = []
+            if script_choice == "all":
+                selected = scripts
+            else:
+                for part in script_choice.split(","):
+                    try:
+                        idx = int(part.strip()) - 1
+                        if 0 <= idx < len(scripts):
+                            selected.append(scripts[idx])
+                    except ValueError:
+                        pass
+
+            if not selected:
+                error("No valid scripts selected.")
+                return
+
+            generated = 0
+            failed = 0
+            for i, s in enumerate(selected):
+                if len(selected) > 1:
+                    info(f"\n{'='*40} Script {i+1}/{len(selected)}: {s['title'][:30]} {'='*40}")
+                try:
+                    gen = ScriptVideoGenerator(s["data"], s["path"], image_provider=provider)
                     result = gen.generate()
                     if result:
                         generated += 1
+                    else:
+                        failed += 1
+                        warning(f"Skipping '{s['title'][:30]}' — failed. Continuing...")
+                except Exception as e:
+                    failed += 1
+                    error(f"Script '{s['title'][:30]}' crashed: {e}")
+                    warning("Skipping to next script...")
 
-                if generated > 0:
-                    success(f"Done! Resumed {generated} video(s).")
-                else:
-                    error("No videos were completed.")
-                return
+            if generated > 0:
+                success(f"Done! {generated} video(s) completed, {failed} failed.")
+            else:
+                error(f"No videos completed. {failed} failed.")
 
-        # Scan scripts
-        scripts = ScriptVideoGenerator.scan_scripts()
-        if not scripts:
-            error("No script files found. Add .json files to source/scripts/")
-            info("Example: source/scripts/my_story.json")
-            return
-
-        info("\n============ AVAILABLE SCRIPTS ============", False)
-        for idx, s in enumerate(scripts):
-            print(colored(f"  {idx + 1}. {s['title']}", "cyan"))
-        info("===========================================\n", False)
-
-        script_choice = question("Select script(s) (number, comma-separated, or 'all'): ").strip().lower()
-
-        selected = []
-        if script_choice == "all":
-            selected = scripts
-        else:
-            for part in script_choice.split(","):
-                try:
-                    idx = int(part.strip()) - 1
-                    if 0 <= idx < len(scripts):
-                        selected.append(scripts[idx])
-                except ValueError:
-                    pass
-
-        if not selected:
-            error("No valid scripts selected.")
-            return
-
-        generated = 0
-        for i, s in enumerate(selected):
-            if len(selected) > 1:
-                info(f"\n{'='*40} Script {i+1}/{len(selected)}: {s['title'][:30]} {'='*40}")
-            gen = ScriptVideoGenerator(s["data"], s["path"])
-            result = gen.generate()
-            if result:
-                generated += 1
-
-        if generated > 0:
-            success(f"Done! Generated {generated} video(s) from scripts.")
-        else:
-            error("No videos were generated.")
+        finally:
+            provider.close_browser()
     elif user_input == len(OPTIONS):
         if get_verbose():
             print(colored(" => Quitting...", "blue"))

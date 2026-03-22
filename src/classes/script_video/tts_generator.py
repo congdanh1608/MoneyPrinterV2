@@ -101,10 +101,16 @@ def generate_segment_tts(
     if not all_audio:
         raise RuntimeError("No audio segments generated.")
 
-    # Use LLM to decide pause timing between segments
+    # Use pause_after from segments if provided, otherwise fallback to LLM
     SAMPLE_RATE = 24000
-    info(" => Planning pause timing between segments...")
-    pauses = plan_pause_timing(segments)
+    has_pause_config = any(seg.get("pause_after") is not None for seg in segments)
+
+    if has_pause_config:
+        pauses = [seg.get("pause_after", 0.3) for seg in segments]
+        info(f" => Using pause_after from script ({len(pauses)} values)")
+    else:
+        info(" => No pause_after in script, using LLM to plan pauses...")
+        pauses = plan_pause_timing(segments)
 
     audio_with_gaps = []
     for i, audio_data in enumerate(all_audio):

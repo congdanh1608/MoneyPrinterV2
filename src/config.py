@@ -390,8 +390,6 @@ def get_firefox_profile_path() -> str:
 def get_google_labs_aspect_ratio() -> str:
     return _read_script_video_config().get("google_labs_aspect_ratio", "9:16")
 
-def get_google_labs_images_per_prompt() -> int:
-    return _read_script_video_config().get("google_labs_images_per_prompt", 2)
 
 def get_default_niche() -> str:
     """

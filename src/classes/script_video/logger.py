@@ -15,6 +15,7 @@ def write_script_log(
     timing: list,
     audio_duration: float,
     profile_id: str,
+    project_url: str = "",
 ) -> str:
     log_path = os.path.join(output_dir, "info.txt")
     duration_mins = int(audio_duration // 60)
@@ -47,7 +48,8 @@ def write_script_log(
         f"Resolution:        1080x1920 (9:16)",
         "",
         "--- CONFIG ---",
-        f"Image provider:    freepik ({get_freepik_model()})",
+        f"Google Labs project: {project_url or 'N/A'}",
+        f"Image provider:    Google Labs (Nano Banana)",
         f"LLM brain:         qwen3:8b + qwen3:14b",
         f"TTS:               VoiceBox ({get_voicebox_url()})",
         "", "--- IMAGE PROMPTS ---",

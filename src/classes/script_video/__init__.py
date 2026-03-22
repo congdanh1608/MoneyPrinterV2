@@ -25,7 +25,7 @@ AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg")
 class ScriptVideoGenerator:
     """Generate YouTube Short from a segment-based script JSON."""
 
-    def __init__(self, script_data: dict, script_path: str) -> None:
+    def __init__(self, script_data: dict, script_path: str, image_provider=None) -> None:
         self._script = script_data
         self._script_path = script_path
         self._title = script_data.get("title", "Untitled")
@@ -45,6 +45,8 @@ class ScriptVideoGenerator:
         if not os.path.exists(script_copy):
             with open(script_copy, "w") as f:
                 json.dump(script_data, f, indent=2)
+
+        self._image_provider = image_provider  # Shared GoogleLabsProvider
 
         # Save script_path in progress for resume cleanup
         prog = self._progress.get()
@@ -139,16 +141,18 @@ class ScriptVideoGenerator:
             info(f" => Found {start_from} existing images, resuming from {start_from + 1}")
 
         if remaining_prompts:
-            generator = ScriptImageGenerator(self._images_dir)
-            if not generator.is_available():
-                self._progress.mark_error("images", "Google Labs not configured")
-                raise RuntimeError("Google Labs image provider not configured. Check config.json.")
+            if not self._image_provider:
+                raise RuntimeError("No image provider. Pass GoogleLabsProvider to constructor.")
+
+            generator = ScriptImageGenerator(self._images_dir, self._image_provider)
 
             try:
-                generator.generate_images(remaining_prompts, aspect_ratio="portrait")
+                generator.generate_images(remaining_prompts)
             except Exception as e:
                 self._progress.mark_error("images", str(e))
                 raise
+
+            self._project_url = generator.get_project_url()
 
         self._progress.mark_step("images")
         return self._load_existing_images()
@@ -300,6 +304,7 @@ class ScriptVideoGenerator:
                 self._output_dir, self._title, self._segments,
                 self._script.get("image_prompts", []),
                 style, timing, duration, profile_id,
+                project_url=getattr(self, '_project_url', ''),
             )
             self._progress.mark_complete()
 
@@ -379,7 +384,7 @@ class ScriptVideoGenerator:
         return resumable
 
     @classmethod
-    def from_output_folder(cls, folder_name: str) -> "ScriptVideoGenerator":
+    def from_output_folder(cls, folder_name: str, image_provider=None) -> "ScriptVideoGenerator":
         output_dir = os.path.join(ROOT_DIR, "output", folder_name)
         script_path = os.path.join(output_dir, "script.json")
         with open(script_path, "r") as f:
@@ -392,6 +397,7 @@ class ScriptVideoGenerator:
         instance._folder_name = folder_name
         instance._output_dir = output_dir
         instance._images_dir = os.path.join(output_dir, "images")
+        instance._image_provider = image_provider
         instance._progress = ProgressTracker(output_dir, instance._title)
         os.makedirs(instance._images_dir, exist_ok=True)
         return instance
