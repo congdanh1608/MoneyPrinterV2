@@ -267,7 +267,7 @@ class GoogleLabsProvider:
                 return btn
         return None
 
-    def _wait_for_response_images(self, driver, timeout: int = 120) -> list:
+    def _wait_for_response_images(self, driver, timeout: int = 180) -> list:
         """Wait for ALL batchGenerateImages responses and extract images.
 
         Each x1 image = 1 batchGenerateImages call. x2 = 2 calls, etc.
