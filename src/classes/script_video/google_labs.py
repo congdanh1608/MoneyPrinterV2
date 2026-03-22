@@ -104,10 +104,10 @@ class GoogleLabsProvider:
                 typed = prompt_el.text[:50]
                 info(f" => Typed prompt: {typed}...")
 
-            # Install fetch intercept to capture batchGenerateImages response
+            # Install fetch intercept to capture ALL batchGenerateImages responses
             # Use bind(window) to preserve correct context
             driver.execute_script("""
-                window.__batchGenResponse = null;
+                window.__batchGenResponses = [];
                 const origFetch = window.fetch.bind(window);
                 window.fetch = function(input, init) {
                     var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
@@ -115,7 +115,7 @@ class GoogleLabsProvider:
                     if (url && url.includes('batchGenerateImages')) {
                         promise.then(function(resp) {
                             resp.clone().json().then(function(data) {
-                                window.__batchGenResponse = data;
+                                window.__batchGenResponses.push(data);
                             }).catch(function(){});
                         }).catch(function(){});
                     }
@@ -267,89 +267,118 @@ class GoogleLabsProvider:
                 return btn
         return None
 
-    def _wait_for_response_images(self, driver, timeout: int = 90) -> list:
-        """Wait for batchGenerateImages response and extract image URLs from it."""
+    def _wait_for_response_images(self, driver, timeout: int = 120) -> list:
+        """Wait for ALL batchGenerateImages responses and extract images.
+
+        Each x1 image = 1 batchGenerateImages call. x2 = 2 calls, etc.
+        Count both success + failed responses toward expected total.
+        Once all responses in (success + failed = expected), return successful images.
+        """
         start = _time.time()
+        expected = get_google_labs_images_per_prompt()
+        prev_resp_count = 0
+        stable_seconds = 0
 
         while _time.time() - start < timeout:
             _time.sleep(3)
 
-            response_data = driver.execute_script("return window.__batchGenResponse")
-            if response_data:
-                return self._extract_images_from_response(driver, response_data)
+            responses = driver.execute_script("return window.__batchGenResponses") or []
+            resp_count = len(responses)
+
+            # Each response = 1 attempt (success or failed/policy block)
+            all_images = []
+            failed_count = 0
+            for resp_data in responses:
+                images = self._extract_images_from_response(driver, resp_data)
+                if images:
+                    all_images.extend(images)
+                else:
+                    failed_count += 1
+
+            # All responses received (success + failed = expected) — done
+            if resp_count >= expected:
+                if get_verbose():
+                    info(f" => All {resp_count} responses received: {len(all_images)} ok, {failed_count} failed")
+                return all_images
+
+            # Track if new responses are still arriving
+            if resp_count > prev_resp_count:
+                stable_seconds = 0
+                prev_resp_count = resp_count
+            else:
+                stable_seconds += 3
+
+            # No new response for 30s — stop waiting
+            if stable_seconds >= 30 and resp_count > 0:
+                if get_verbose():
+                    info(f" => No new responses for {stable_seconds}s. {len(all_images)} ok, {failed_count} failed ({resp_count}/{expected} responses)")
+                return all_images
 
             elapsed = int(_time.time() - start)
-            if get_verbose() and elapsed % 15 == 0:
-                info(f" => Waiting for API response... ({elapsed}s)")
+            if get_verbose() and elapsed % 10 == 0:
+                info(f" => Waiting... ({elapsed}s, {resp_count}/{expected} responses, {len(all_images)} ok, {failed_count} failed)")
 
-        return []
+        return all_images
 
     def _extract_images_from_response(self, driver, data: dict) -> list:
-        """Parse batchGenerateImages response and download images."""
+        """Parse batchGenerateImages response and download images.
+
+        Response structure:
+        {
+          "media": [{
+            "image": {
+              "generatedImage": {
+                "fifeUrl": "https://storage.googleapis.com/ai-sandbox-videofx/image/...",
+                "mediaName": "uuid"
+              }
+            }
+          }]
+        }
+        """
         results = []
+        media_list = data.get("media", [])
 
-        # Build session with browser cookies for authenticated downloads
-        session = requests.Session()
-        for c in driver.get_cookies():
-            session.cookies.set(c["name"], c["value"])
+        if not media_list:
+            if get_verbose():
+                warning(f" => No 'media' key in response. Keys: {list(data.keys())}")
+            return results
 
-        # Response structure: {generatedMedia: [{mediaGenerateInfo: {mediaName: "uuid"}, ...}]}
-        generated = data.get("generatedMedia", [])
-        if not generated:
-            # Try alternative structures
-            generated = data.get("results", []) or data.get("images", [])
+        for item in media_list:
+            image = item.get("image", {})
+            gen_image = image.get("generatedImage", {})
 
-        for item in generated:
-            media_name = None
-            # Structure: {mediaGenerateInfo: {mediaName: "uuid"}}
-            mgi = item.get("mediaGenerateInfo", {})
-            media_name = mgi.get("mediaName")
-
-            if not media_name:
-                # Try other keys
-                media_name = item.get("name") or item.get("id") or item.get("mediaName")
-
-            if not media_name:
-                continue
-
-            # Check if generation failed (policy violation etc.)
-            status = mgi.get("mediaGenerateStatus", "")
-            if status and "FAIL" in str(status).upper():
+            # Check for failure
+            fail_reason = gen_image.get("failureReason") or item.get("error")
+            if fail_reason:
                 if get_verbose():
-                    warning(f" => Image blocked by policy: {media_name}")
+                    warning(f" => Image blocked: {fail_reason}")
                 continue
 
-            # Download via the redirect API
-            img_url = f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_name}"
+            # Get download URL — fifeUrl is a signed GCS URL
+            fife_url = gen_image.get("fifeUrl", "")
+            if not fife_url:
+                # Fallback: try mediaName via redirect API
+                media_name = gen_image.get("mediaName") or image.get("name", "")
+                if media_name:
+                    fife_url = f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_name}"
+
+            if not fife_url:
+                if get_verbose():
+                    warning(f" => No URL found for image item")
+                continue
 
             try:
-                resp = session.get(img_url, timeout=30)
+                resp = requests.get(fife_url, timeout=30)
                 resp.raise_for_status()
-
-                if resp.headers.get("content-type", "").startswith("image"):
-                    results.append(resp.content)
-                    if get_verbose():
-                        info(f" => Downloaded image: {media_name[:20]}... ({len(resp.content)} bytes)")
-                else:
-                    # May be a redirect URL in JSON
-                    try:
-                        redirect_data = resp.json()
-                        redirect_url = redirect_data.get("result", {}).get("data", {}).get("url", "")
-                        if redirect_url:
-                            img_resp = session.get(redirect_url, timeout=30)
-                            img_resp.raise_for_status()
-                            results.append(img_resp.content)
-                            if get_verbose():
-                                info(f" => Downloaded image via redirect: {media_name[:20]}...")
-                    except Exception:
-                        if get_verbose():
-                            warning(f" => Could not parse redirect for {media_name}")
+                results.append(resp.content)
+                if get_verbose():
+                    info(f" => Downloaded image ({len(resp.content)} bytes)")
             except Exception as e:
                 if get_verbose():
-                    warning(f" => Failed to download {media_name}: {e}")
+                    warning(f" => Failed to download image: {e}")
 
         if get_verbose():
-            info(f" => Got {len(results)} images from API response ({len(generated)} total in response)")
+            info(f" => Got {len(results)} images from API response ({len(media_list)} in response)")
 
         return results
 

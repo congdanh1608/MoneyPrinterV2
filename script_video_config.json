@@ -2,7 +2,7 @@
   "voicebox_url": "http://127.0.0.1:17493",
   "voicebox_profile_id": "",
   "voicebox_language": "en",
-  "google_labs_project_id": "c85b8c20-eb88-41ff-b8bf-7505e3965c27",
+  "google_labs_project_id": "440838a9-b48a-4ccc-9719-d7d7078a556f",
   "google_labs_image_model": "NARWHAL",
   "google_labs_aspect_ratio": "9:16",
   "google_labs_images_per_prompt": 2,
